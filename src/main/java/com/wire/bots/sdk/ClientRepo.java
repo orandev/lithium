@@ -1,79 +1,37 @@
 package com.wire.bots.sdk;
 
-import com.wire.cryptobox.CryptoException;
+import com.wire.bots.sdk.crypto.Crypto;
+import com.wire.bots.sdk.factories.CryptoFactory;
+import com.wire.bots.sdk.factories.StorageFactory;
+import com.wire.bots.sdk.server.model.NewBot;
+import com.wire.bots.sdk.storage.Storage;
+import com.wire.bots.sdk.tools.Logger;
 
-import java.io.File;
 import java.io.IOException;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ClientRepo {
-    private final WireClientFactory factory;
-    private final String path;
-    private final HashMap<String, WireClient> clients = new HashMap<>();
+    protected final CryptoFactory cryptoFactory;
+    protected final StorageFactory storageFactory;
+    protected final ConcurrentHashMap<String, WireClient> clients = new ConcurrentHashMap<>();
 
-    public ClientRepo(WireClientFactory factory, String path) {
-        this.factory = factory;
-        this.path = path;
+    public ClientRepo(CryptoFactory cryptoFactory, StorageFactory storageFactory) {
+        this.cryptoFactory = cryptoFactory;
+        this.storageFactory = storageFactory;
     }
 
     public WireClient getWireClient(String botId) {
-        synchronized (clients) {
-            WireClient wireClient = clients.get(botId);
-            if (wireClient == null || wireClient.isClosed()) {
-                File clientFile = new File(String.format("%s/%s/client.id", path, botId));
-                File tokenFile = new File(String.format("%s/%s/token.id", path, botId));
-                File convFile = new File(String.format("%s/%s/conversation.id", path, botId));
-
-                if (!clientFile.exists() || !tokenFile.exists())
-                    return null;
-
-                try {
-                    String clientId = Util.readLine(clientFile);
-                    String token = Util.readLine(tokenFile);
-                    String conv = convFile.exists() ? Util.readLine(convFile) : null;
-
-                    wireClient = factory.createClient(botId, conv, clientId, token);
-                    WireClient old = clients.put(botId, wireClient);
-                    if (old != null)
-                        old.close();
-                } catch (Exception e) {
-                    Logger.error("GetWireClient. BotId: %s, status: %s", botId, e.getLocalizedMessage());
-                }
+        return clients.computeIfAbsent(botId, k -> {
+            try {
+                Crypto crypto = cryptoFactory.create(k);
+                Storage storage = storageFactory.create(k);
+                return new BotClient(crypto, storage);
+            } catch (Exception e) {
+                Logger.error("GetWireClient. BotId: %s, status: %s", botId, e);
+                return null;
             }
-            return wireClient;
-        }
-    }
-
-    @Deprecated
-    public WireClient getWireClient(String botId, String conv) throws CryptoException, IOException {
-        synchronized (clients) {
-            String key = String.format("%s-%s", botId, conv);
-            WireClient wireClient = clients.get(key);
-            if (wireClient == null || wireClient.isClosed()) {
-                File clientFile = new File(String.format("%s/%s/client.id", path, botId));
-                File tokenFile = new File(String.format("%s/%s/token.id", path, botId));
-                
-                if (!clientFile.exists() || !tokenFile.exists())
-                    return null;
-
-                try {
-                    String clientId = Util.readLine(clientFile);
-                    String token = Util.readLine(tokenFile);
-
-                    wireClient = factory.createClient(botId, conv, clientId, token);
-                    WireClient old = clients.put(key, wireClient);
-                    if (old != null)
-                        old.close();
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    Logger.error("GetWireClient. BotId: %s, conv: %s, status: %s",
-                            botId,
-                            conv,
-                            e.getLocalizedMessage());
-                }
-            }
-            return wireClient;
-        }
+        });
     }
 
     public void removeClient(String botId) {
@@ -89,21 +47,37 @@ public class ClientRepo {
         }
     }
 
-    public void purgeBot(String botId) {
-        File clientFile = new File(String.format("%s/%s/client.id", path, botId));
-        File tokenFile = new File(String.format("%s/%s/token.id", path, botId));
-        File convFile = new File(String.format("%s/%s/conversation.id", path, botId));
-
-        clientFile.delete();
-        tokenFile.delete();
-        convFile.delete();
+    public void purgeBot(String botId) throws Exception {
+        boolean purged = storageFactory.create(botId).removeState();
+        removeClient(botId);
+        if (!purged)
+            Logger.error("Failed to purge bot: %s", botId);
     }
 
-    public WireClientFactory getFactory() {
-        return factory;
+    public ArrayList<WireClient> listClients() throws Exception {
+        ArrayList<WireClient> ret = new ArrayList<>();
+        for (String bot : listAllBots()) {
+            WireClient wireClient = getWireClient(bot);
+            if (wireClient != null)
+                ret.add(wireClient);
+        }
+        return ret;
     }
 
-    public String getPath() {
-        return path;
+    private ArrayList<String> listAllBots() throws Exception {
+        ArrayList<String> ret = new ArrayList<>();
+        Storage storage = storageFactory.create("");
+        for (NewBot newBot : storage.listAllStates()) {
+            ret.add(newBot.id);
+        }
+        return ret;
+    }
+
+    public CryptoFactory getCryptoFactory() {
+        return cryptoFactory;
+    }
+
+    public StorageFactory getStorageFactory() {
+        return storageFactory;
     }
 }

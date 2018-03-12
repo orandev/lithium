@@ -20,15 +20,16 @@ package com.wire.bots.sdk.user;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.wire.bots.sdk.Logger;
-import com.wire.bots.sdk.Util;
 import com.wire.bots.sdk.assets.IAsset;
+import com.wire.bots.sdk.exceptions.HttpException;
 import com.wire.bots.sdk.models.AssetKey;
 import com.wire.bots.sdk.models.otr.*;
 import com.wire.bots.sdk.server.model.Conversation;
 import com.wire.bots.sdk.server.model.Member;
 import com.wire.bots.sdk.server.model.Service;
 import com.wire.bots.sdk.server.model.User;
+import com.wire.bots.sdk.tools.Logger;
+import com.wire.bots.sdk.tools.Util;
 import com.wire.bots.sdk.user.model.Connection;
 
 import javax.ws.rs.client.Entity;
@@ -43,26 +44,51 @@ import java.util.Collection;
 import java.util.List;
 
 public class API extends LoginClient {
-
-    private String convId;
     private final String token;
+    private final String convId;
 
     public API(String convId, String token) {
         this.convId = convId;
         this.token = token;
     }
 
-    public API(String token) throws IOException {
-        this.token = token;
+    static String renewAccessToken(String cookie, String token) throws HttpException {
+        Response response = accessPath.
+                request(MediaType.APPLICATION_JSON).
+                header("Authorization", "Bearer " + token).
+                header("Cookie", cookie).
+                post(Entity.entity(new Connection(), MediaType.APPLICATION_JSON));
+
+
+        if (response.getStatus() >= 400) {
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
+        }
+
+        return response.readEntity(com.wire.bots.sdk.user.model.User.class).getToken();
     }
 
-    Devices sendMessage(OtrMessage msg) throws IOException {
-        return sendMessage(msg, false);
+    public static Conversation createConversation(String name, String token) throws HttpException {
+        Response response = conversationsPath.
+                request().
+                header("Authorization", "Bearer " + token).
+                accept(MediaType.APPLICATION_JSON).
+                post(Entity.entity("{\"users\":[], \"name\":\"" + name + "\"}", MediaType.APPLICATION_JSON));
+
+        if (response.getStatus() >= 400) {
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
+        }
+
+        _Conv conv = response.readEntity(_Conv.class);
+
+        Conversation ret = new Conversation();
+        ret.name = conv.name;
+        ret.id = conv.id;
+        ret.members = conv.members.others;
+        return ret;
     }
 
-    Devices sendMessage(OtrMessage msg, boolean ignoreMissing) throws IOException {
-        Response response = client.target(httpUrl).
-                path("conversations").
+    Devices sendMessage(OtrMessage msg, boolean ignoreMissing) throws HttpException {
+        Response response = conversationsPath.
                 path(convId).
                 path("otr/messages").
                 queryParam("ignore_missing", ignoreMissing).
@@ -76,8 +102,8 @@ public class API extends LoginClient {
             return response.readEntity(Devices.class);
         }
 
-        if (statusCode >= 300)
-            throw new IOException("sendMessage: " + response.readEntity(String.class) + ". code: " + statusCode);
+        if (statusCode >= 400)
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
 
         return new Devices();
     }
@@ -86,17 +112,15 @@ public class API extends LoginClient {
         if (missing.isEmpty())
             return new PreKeys();
 
-        return client.target(httpUrl).
-                path("users/prekeys").
+        return usersPath.path("prekeys").
                 request(MediaType.APPLICATION_JSON).
                 header("Authorization", "Bearer " + token).
                 accept(MediaType.APPLICATION_JSON).
                 post(Entity.entity(missing, MediaType.APPLICATION_JSON), PreKeys.class);
     }
 
-    byte[] downloadAsset(String assetKey, String assetToken) throws IOException {
-        Invocation.Builder req = client.target(httpUrl)
-                .path("assets/v3")
+    byte[] downloadAsset(String assetKey, String assetToken) throws HttpException {
+        Invocation.Builder req = assetsPath
                 .path(assetKey)
                 .request()
                 .header("Authorization", "Bearer " + token);
@@ -107,45 +131,26 @@ public class API extends LoginClient {
         Response response = req.get();
 
         if (response.getStatus() >= 300) {
-            Logger.warning(response.readEntity(String.class) + ". AssetId: " + assetKey);
-            throw new IOException(response.getStatusInfo().getReasonPhrase());
+            String log = String.format("%s. AssetId: %s", response.readEntity(String.class), assetKey);
+            throw new HttpException(log, response.getStatus());
         }
 
         return response.readEntity(byte[].class);
     }
 
-    void acceptConnection(String user) throws IOException {
+    void acceptConnection(String user) throws HttpException {
         Connection connection = new Connection();
         connection.setStatus("accepted");
 
-        Response response = client.target(httpUrl).
-                path("connections").
+        Response response = connectionsPath.
                 path(user).
                 request(MediaType.APPLICATION_JSON).
                 header("Authorization", "Bearer " + token).
                 put(Entity.entity(connection, MediaType.APPLICATION_JSON));
 
-        if (response.getStatus() >= 300) {
-            Logger.warning(response.readEntity(String.class));
-            throw new IOException(response.getStatusInfo().getReasonPhrase());
+        if (response.getStatus() >= 400) {
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
         }
-    }
-
-    static String renewAccessToken(String cookie, String token) throws IOException {
-        Response response = client.target(httpUrl).
-                path("access").
-                request(MediaType.APPLICATION_JSON).
-                header("Authorization", "Bearer " + token).
-                header("Cookie", cookie).
-                post(Entity.entity(new Connection(), MediaType.APPLICATION_JSON));
-
-
-        if (response.getStatus() >= 300) {
-            Logger.warning(response.readEntity(String.class));
-            throw new IOException(response.getStatusInfo().getReasonPhrase());
-        }
-
-        return response.readEntity(com.wire.bots.sdk.user.model.User.class).getToken();
     }
 
     AssetKey uploadAsset(IAsset asset) throws Exception {
@@ -181,41 +186,20 @@ public class API extends LoginClient {
         os.write(asset.getEncryptedData());
         os.write("\r\n--frontier--\r\n".getBytes("utf-8"));
 
-        Response response = client.target(httpUrl)
-                .path("assets/v3")
+        Response response = assetsPath
                 .request(MediaType.APPLICATION_JSON_TYPE)
                 .header("Authorization", "Bearer " + token)
                 .post(Entity.entity(os.toByteArray(), "multipart/mixed; boundary=frontier"));
 
         if (response.getStatus() >= 300) {
-            Logger.warning(response.readEntity(String.class));
-            throw new IOException(response.getStatusInfo().getReasonPhrase());
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
         }
 
         return response.readEntity(AssetKey.class);
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class _Cov {
-        @JsonProperty
-        public String id;
-
-        @JsonProperty
-        public String name;
-
-        @JsonProperty
-        public _Members members;
-    }
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class _Members {
-        @JsonProperty
-        public List<Member> others;
-    }
-
     Conversation getConversation() throws IOException {
-        Response response = client.target(httpUrl).
-                path("conversations").
+        Response response = conversationsPath.
                 path(convId).
                 request().
                 header("Authorization", "Bearer " + token).
@@ -227,7 +211,7 @@ public class API extends LoginClient {
             throw new IOException(response.getStatusInfo().getReasonPhrase());
         }
 
-        _Cov conv = response.readEntity(_Cov.class);
+        _Conv conv = response.readEntity(_Conv.class);
 
         Conversation ret = new Conversation();
         ret.name = conv.name;
@@ -236,32 +220,8 @@ public class API extends LoginClient {
         return ret;
     }
 
-    public Conversation createConversation(String name) throws IOException {
-        Response response = client.target(httpUrl).
-                path("conversations").
-                request().
-                header("Authorization", "Bearer " + token).
-                accept(MediaType.APPLICATION_JSON).
-                post(Entity.entity("{\"users\":[], \"name\":\"" + name + "\"}", MediaType.APPLICATION_JSON));
-
-        if (response.getStatus() >= 300) {
-            Logger.warning(response.readEntity(String.class));
-            throw new IOException(response.getStatusInfo().getReasonPhrase());
-        }
-
-        _Cov conv = response.readEntity(_Cov.class);
-
-        convId = conv.id;
-        Conversation ret = new Conversation();
-        ret.name = conv.name;
-        ret.id = conv.id;
-        ret.members = conv.members.others;
-        return ret;
-    }
-
-    public void deleteConversation(String teamId) throws IOException {
-        Response response = client.target(httpUrl).
-                path("teams").
+    public boolean deleteConversation(String teamId) throws HttpException {
+        Response response = teamsPath.
                 path(teamId).
                 path("conversations").
                 path(convId).
@@ -270,15 +230,11 @@ public class API extends LoginClient {
                 accept(MediaType.APPLICATION_JSON).
                 delete();
 
-        if (response.getStatus() >= 300) {
-            Logger.warning(response.readEntity(String.class));
-            throw new IOException(response.getStatusInfo().getReasonPhrase());
+        if (response.getStatus() >= 400) {
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
         }
-    }
 
-    class _Service {
-        public String service;
-        public String provider;
+        return response.getStatus() == 200;
     }
 
     public User addService(String serviceId, String providerId) throws IOException {
@@ -286,8 +242,7 @@ public class API extends LoginClient {
         service.service = serviceId;
         service.provider = providerId;
 
-        Response response = client.target(httpUrl).
-                path("conversations").
+        Response response = conversationsPath.
                 path(convId).
                 path("bots").
                 request().
@@ -308,9 +263,8 @@ public class API extends LoginClient {
     }
 
     Collection<com.wire.bots.sdk.server.model.User> getUsers(Collection<String> ids) throws IOException {
-        return client.target(httpUrl).
-                path("users").
-                queryParam("ids", String.join(",", ids)).
+        return usersPath.
+                queryParam("ids", ids).
                 request(MediaType.APPLICATION_JSON).
                 header("Authorization", "Bearer " + token).
                 get(new GenericType<ArrayList<com.wire.bots.sdk.server.model.User>>() {
@@ -318,8 +272,7 @@ public class API extends LoginClient {
     }
 
     void uploadPreKeys(ArrayList<PreKey> preKeys) {
-        client.target(httpUrl).
-                path("users/prekeys").
+        usersPath.path("prekeys").
                 request(MediaType.APPLICATION_JSON).
                 header("Authorization", "Bearer " + token).
                 accept(MediaType.APPLICATION_JSON).
@@ -327,8 +280,7 @@ public class API extends LoginClient {
     }
 
     ArrayList<Integer> getAvailablePrekeys(String clientId) {
-        return client.target(httpUrl).
-                path("clients").
+        return clientsPath.
                 path(clientId).
                 path("prekeys").
                 request().
@@ -336,5 +288,54 @@ public class API extends LoginClient {
                 accept(MediaType.APPLICATION_JSON).
                 get(new GenericType<ArrayList<Integer>>() {
                 });
+    }
+
+    public String getTeam() {
+        _Teams res = teamsPath.request(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer " + token)
+                .accept(MediaType.APPLICATION_JSON)
+                .get(_Teams.class);
+        if (res.teams.isEmpty())
+            return null;
+
+        return res.teams.get(0).id;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class _Conv {
+        @JsonProperty
+        public String id;
+
+        @JsonProperty
+        public String name;
+
+        @JsonProperty
+        public _Members members;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class _Members {
+        @JsonProperty
+        public List<Member> others;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class _Service {
+        public String service;
+        public String provider;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class _Team {
+        @JsonProperty
+        public String id;
+        @JsonProperty
+        public String name;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class _Teams {
+        @JsonProperty
+        public ArrayList<_Team> teams;
     }
 }

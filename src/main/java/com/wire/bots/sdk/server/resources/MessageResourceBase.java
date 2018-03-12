@@ -1,23 +1,25 @@
 package com.wire.bots.sdk.server.resources;
 
 import com.waz.model.Messages;
-import com.wire.bots.sdk.*;
+import com.wire.bots.sdk.ClientRepo;
+import com.wire.bots.sdk.MessageHandlerBase;
+import com.wire.bots.sdk.WireClient;
 import com.wire.bots.sdk.models.otr.PreKey;
 import com.wire.bots.sdk.server.GenericMessageProcessor;
 import com.wire.bots.sdk.server.model.InboundMessage;
+import com.wire.bots.sdk.tools.Logger;
 
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 
 public abstract class MessageResourceBase {
 
     protected final MessageHandlerBase handler;
-    protected final Configuration conf;
     protected final ClientRepo repo;
 
-    public MessageResourceBase(MessageHandlerBase handler, Configuration conf, ClientRepo repo) {
+    public MessageResourceBase(MessageHandlerBase handler, ClientRepo repo) {
         this.handler = handler;
-        this.conf = conf;
         this.repo = repo;
     }
 
@@ -27,15 +29,13 @@ public abstract class MessageResourceBase {
             case "conversation.otr-message-add": {
                 GenericMessageProcessor processor = new GenericMessageProcessor(client, handler);
 
-                byte[] bytes = client.decrypt(inbound.from, data.sender, data.text);
-                Messages.GenericMessage genericMessage = Messages.GenericMessage.parseFrom(bytes);
+                String encoded = client.decrypt(inbound.from, data.sender, data.text);
+                byte[] decode = Base64.getDecoder().decode(encoded);
+                Messages.GenericMessage genericMessage = Messages.GenericMessage.parseFrom(decode);
 
                 handler.onEvent(client, inbound.from, genericMessage);
 
-                boolean processed = processor.process(inbound.from, genericMessage);
-                if (processed) {
-                    sendDeliveryReceipt(client, genericMessage.getMessageId());
-                }
+                processor.process(inbound.from, genericMessage);
             }
             break;
             case "conversation.member-join": {
@@ -102,14 +102,6 @@ public abstract class MessageResourceBase {
             default:
                 Logger.warning("Unknown event: %s, bot: %s", inbound.type, client.getId());
                 break;
-        }
-    }
-
-    private void sendDeliveryReceipt(WireClient client, String messageId) {
-        try {
-            client.sendDelivery(messageId);
-        } catch (Exception e) {
-            Logger.warning("sendDeliveryReceipt: " + e.getMessage());
         }
     }
 }

@@ -20,10 +20,9 @@ package com.wire.bots.sdk.user;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider;
-import com.wire.bots.sdk.Logger;
-import com.wire.bots.sdk.Util;
+import com.wire.bots.sdk.exceptions.HttpException;
 import com.wire.bots.sdk.models.otr.PreKey;
-import com.wire.bots.sdk.server.model.Member;
+import com.wire.bots.sdk.tools.Util;
 import com.wire.bots.sdk.user.model.NewClient;
 import com.wire.bots.sdk.user.model.User;
 import org.glassfish.jersey.client.ClientConfig;
@@ -31,45 +30,56 @@ import org.glassfish.jersey.client.JerseyClientBuilder;
 
 import javax.ws.rs.client.Client;
 import javax.ws.rs.client.Entity;
+import javax.ws.rs.client.WebTarget;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-import java.io.IOException;
 import java.util.Base64;
 
 public class LoginClient {
-    protected final static Client client;
-    final static String httpUrl;
+    final static WebTarget clientsPath;
+    final static WebTarget conversationsPath;
+    final static WebTarget usersPath;
+    final static WebTarget accessPath;
+    final static WebTarget assetsPath;
+    final static WebTarget teamsPath;
+    final static WebTarget connectionsPath;
+    private final static WebTarget loginPath;
 
     static {
-        String env = System.getProperty("env", "prod");
-        httpUrl = String.format("https://%s-nginz-https.%s", env, Util.getDomain());
-
         ClientConfig cfg = new ClientConfig(JacksonJsonProvider.class);
-        client = JerseyClientBuilder.createClient(cfg);
+        Client client = JerseyClientBuilder.createClient(cfg);
+
+        WebTarget target = client.target(Util.getHost());
+        loginPath = target.path("login");
+        clientsPath = target.path("clients");
+        conversationsPath = target.path("conversations");
+        usersPath = target.path("users");
+        accessPath = target.path("access");
+        assetsPath = target.path("assets/v3");
+        teamsPath = target.path("teams");
+        connectionsPath = target.path("connections");
     }
 
-    User login(String email, String password) throws IOException {
-        User login = new User();
-        login.setEmail(email);
-        login.setPassword(password);
+    static User login(String email, String password) throws HttpException {
+        User user = new User();
+        user.setEmail(email);
+        user.setPassword(password);
 
-        Response response = client.target(httpUrl).
-                path("login").
-                queryParam("persist", true).
+        Response response = loginPath.
+                queryParam("persist", false).
                 request(MediaType.APPLICATION_JSON).
-                post(Entity.entity(login, MediaType.APPLICATION_JSON));
+                post(Entity.entity(user, MediaType.APPLICATION_JSON));
 
+        if (response.getStatus() >= 400)
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
 
-        if (response.getStatus() >= 300)
-            throw new IOException("Login: " + response.readEntity(String.class) + ". code: " + response.getStatus());
-
-        User user = response.readEntity(User.class);
+        User ret = response.readEntity(User.class);
         String cookie = response.getStringHeaders().getFirst("Set-Cookie");
-        user.setCookie(cookie);
-        return user;
+        ret.setCookie(cookie);
+        return ret;
     }
 
-    String registerClient(PreKey key, String token, String password) throws IOException {
+    static String registerClient(PreKey key, String token, String password) throws HttpException {
         NewClient newClient = new NewClient();
         newClient.lastPreKey = key;
         newClient.sigkeys.enckey = Base64.getEncoder().encodeToString(new byte[32]);
@@ -80,16 +90,13 @@ public class LoginClient {
         newClient.label = "wbotz";
         newClient.type = "permanent";
 
-        Response response = client.target(httpUrl).
-                path("clients").
+        Response response = clientsPath.
                 request(MediaType.APPLICATION_JSON).
                 header("Authorization", "Bearer " + token).
                 post(Entity.entity(newClient, MediaType.APPLICATION_JSON));
 
-        if (response.getStatus() >= 300)
-            throw new IOException(String.format("registerClient: %s. code: %d",
-                    response.readEntity(String.class),
-                    response.getStatus()));
+        if (response.getStatus() >= 400)
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
 
         return response.readEntity(_Client.class).id;
     }
@@ -97,41 +104,5 @@ public class LoginClient {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class _Client {
         public String id;
-    }
-
-    public String newConversation(String token, String name) throws IOException {
-        Response response = client.target(httpUrl)
-                .path("conversations")
-                .request(MediaType.APPLICATION_JSON)
-                .header("Authorization", "Bearer " + token)
-                .post(Entity.entity(String.format("{ \"name\":\"%s\", \"users\":[] }", name), MediaType.APPLICATION_JSON));
-
-        if (response.getStatus() > 300) {
-            String msg = String.format("newConversation: %s, code: %s", response.readEntity(String.class)
-                    , response.getStatus());
-            Logger.warning(msg);
-            throw new IOException(msg);
-        }
-        return response.readEntity(Member.class).id;   //todo fix me, ffs!
-    }
-
-    public boolean addService(String token, String convId, String provider, String service) throws IOException {
-        String json = String.format("{ \"provider\":\"%s\", \"service\":\"%s\" }", provider, service);
-
-        Response response = client.target(httpUrl)
-                .path("conversations")
-                .path(convId)
-                .path("bots")
-                .request(MediaType.APPLICATION_JSON)
-                .header("Authorization", "Bearer " + token)
-                .post(Entity.entity(json, MediaType.APPLICATION_JSON));
-
-        if (response.getStatus() > 300) {
-            String msg = String.format("addService: %s, code: %s", response.readEntity(String.class)
-                    , response.getStatus());
-            Logger.warning(msg);
-            throw new IOException(msg);
-        }
-        return response.getStatus() == 201;
     }
 }

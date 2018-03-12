@@ -19,24 +19,30 @@
 package com.wire.bots.sdk;
 
 import com.codahale.metrics.Gauge;
-import com.codahale.metrics.JmxReporter;
 import com.codahale.metrics.health.HealthCheck;
+import com.wire.bots.sdk.crypto.Crypto;
+import com.wire.bots.sdk.crypto.CryptoFile;
+import com.wire.bots.sdk.factories.CryptoFactory;
+import com.wire.bots.sdk.factories.StorageFactory;
 import com.wire.bots.sdk.server.resources.BotsResource;
 import com.wire.bots.sdk.server.resources.MessageResource;
 import com.wire.bots.sdk.server.resources.StatusResource;
 import com.wire.bots.sdk.server.tasks.AvailablePrekeysTask;
 import com.wire.bots.sdk.server.tasks.BroadcastAllTask;
 import com.wire.bots.sdk.server.tasks.ConversationTask;
+import com.wire.bots.sdk.storage.FileStorage;
+import com.wire.bots.sdk.tools.AuthValidator;
+import com.wire.bots.sdk.tools.Logger;
+import com.wire.bots.sdk.tools.Util;
 import com.wire.bots.sdk.user.Endpoint;
-import com.wire.bots.sdk.user.UserClient;
+import com.wire.bots.sdk.user.UserClientRepo;
+import com.wire.bots.sdk.user.UserMessageResource;
 import io.dropwizard.Application;
 import io.dropwizard.servlets.tasks.Task;
 import io.dropwizard.setup.Bootstrap;
 import io.dropwizard.setup.Environment;
 
-import java.io.File;
 import java.util.Random;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Entry point for your Application
@@ -55,10 +61,11 @@ public abstract class Server<Config extends Configuration> extends Application<C
      * @param env    Environment object
      * @return Instance of your class that implements {@see @MessageHandlerBase}
      */
-    protected abstract MessageHandlerBase createHandler(Config config, Environment env);
+    protected abstract MessageHandlerBase createHandler(Config config, Environment env) throws Exception;
 
     /**
-     * Override this method in case you need to add custom Resource and/or Task {@link #addResource(Object, io.dropwizard.setup.Environment)}
+     * Override this method in case you need to add custom Resource and/or Task
+     * {@link #addResource(Object, io.dropwizard.setup.Environment)}
      * and {@link #addTask(io.dropwizard.servlets.tasks.Task, io.dropwizard.setup.Environment)}
      *
      * @param config Configuration object (yaml)
@@ -76,6 +83,8 @@ public abstract class Server<Config extends Configuration> extends Application<C
         this.config = config;
         this.environment = env;
 
+        initialize(config, env);
+
         initTelemetry(config, env);
 
         if (!runInUserMode(config, env)) {
@@ -85,14 +94,23 @@ public abstract class Server<Config extends Configuration> extends Application<C
         onRun(config, env);
     }
 
-    private void runInBotMode(Config config, Environment env) {
-        WireClientFactory factory = (botId, convId, clientId, token) -> {
-            String path = String.format("%s/%s", config.getCryptoDir(), botId);
-            OtrManager otrManager = new OtrManager(path);
-            return new BotClient(otrManager, botId, convId, clientId, token);
-        };
+    protected void initialize(Config config, Environment env) throws Exception {
 
-        repo = new ClientRepo(factory, config.getCryptoDir());
+    }
+
+    protected StorageFactory getStorageFactory(Config config) {
+        return botId -> new FileStorage(config.data, botId);
+    }
+
+    protected CryptoFactory getCryptoFactory(Config config) {
+        return (botId) -> new CryptoFile(config.data, botId);
+    }
+
+    private void runInBotMode(Config config, Environment env) throws Exception {
+        StorageFactory storageFactory = getStorageFactory(config);
+        CryptoFactory cryptoFactory = getCryptoFactory(config);
+
+        repo = new ClientRepo(cryptoFactory, storageFactory);
 
         MessageHandlerBase handler = createHandler(config, env);
 
@@ -101,7 +119,7 @@ public abstract class Server<Config extends Configuration> extends Application<C
         botResource(config, env, handler);
         messageResource(config, env, handler);
 
-        addTask(new BroadcastAllTask(config, repo), env);
+        addTask(new BroadcastAllTask(repo), env);
         addTask(new ConversationTask(repo), env);
         addTask(new AvailablePrekeysTask(repo), env);
     }
@@ -111,31 +129,33 @@ public abstract class Server<Config extends Configuration> extends Application<C
         String password = System.getProperty("password");
 
         if (email != null && password != null) {
-            WireClientFactory userClientFactory = (botId, convId, clientId, token) -> {
-                String path = String.format("%s/%s", config.getCryptoDir(), botId);
-                OtrManager otrManager = new OtrManager(path);
-                return new UserClient(otrManager, botId, convId, clientId, token);
-            };
-            repo = new ClientRepo(userClientFactory, config.getCryptoDir());
+            StorageFactory storageFactory = getStorageFactory(config);
+            CryptoFactory cryptoFactory = getCryptoFactory(config);
 
+            UserClientRepo repo = new UserClientRepo(cryptoFactory, storageFactory);
 
-            Endpoint ep = new Endpoint(config);
+            Endpoint ep = new Endpoint(config.data);
             String userId = ep.signIn(email, password, true);
             Logger.info(String.format("Logged in as User: %s userId: %s", email, userId));
 
             MessageHandlerBase handler = createHandler(config, env);
-            ep.connectWebSocket(new MessageResource(handler, config, repo));
+            ep.connectWebSocket(new UserMessageResource(handler, repo));
             return true;
         }
         return false;
     }
 
     protected void messageResource(Config config, Environment env, MessageHandlerBase handler) {
-        addResource(new MessageResource(handler, config, repo), env);
+        AuthValidator validator = new AuthValidator(config.getAuth());
+        addResource(new MessageResource(handler, validator, repo), env);
     }
 
     protected void botResource(Config config, Environment env, MessageHandlerBase handler) {
-        addResource(new BotsResource(handler, config, repo), env);
+        StorageFactory storageFactory = getStorageFactory(config);
+        CryptoFactory cryptoFactory = getCryptoFactory(config);
+        AuthValidator authValidator = new AuthValidator(config.getAuth());
+
+        addResource(new BotsResource(handler, storageFactory, cryptoFactory, authValidator), env);
     }
 
     protected void addTask(Task task, Environment env) {
@@ -154,23 +174,11 @@ public abstract class Server<Config extends Configuration> extends Application<C
             }
         });
 
-        env.healthChecks().register("data volume", new HealthCheck() {
+        //todo: implement crypto.status()
+        env.healthChecks().register("Crypto", new HealthCheck() {
             @Override
             protected Result check() throws Exception {
-                File f = new File(conf.getCryptoDir());
-                if (f.exists()) {
-                    return Result.healthy();
-                }
-                String log = String.format("Failed reading volume %s", f.getCanonicalPath());
-                Logger.error(log);
-                return Result.unhealthy(log);
-            }
-        });
-
-        env.healthChecks().register("CryptoBox", new HealthCheck() {
-            @Override
-            protected Result check() throws Exception {
-                try (OtrManager otr = new OtrManager(config.getCryptoDir())) {
+                try (Crypto crypto = getCryptoFactory(conf).create("test")) {
                     return Result.healthy();
                 }
             }
@@ -192,17 +200,6 @@ public abstract class Server<Config extends Configuration> extends Application<C
             }
         });
 
-        env.metrics().register("logger.errors", new Gauge<Integer>() {
-            @Override
-            public Integer getValue() {
-                return Logger.getErrorCount();
-            }
-        });
-
-        JmxReporter jmxReporter = JmxReporter.forRegistry(env.metrics())
-                .convertRatesTo(TimeUnit.SECONDS)
-                .convertDurationsTo(TimeUnit.MILLISECONDS)
-                .build();
-        jmxReporter.start();
+        env.metrics().register("logger.errors", (Gauge<Integer>) Logger::getErrorCount);
     }
 }

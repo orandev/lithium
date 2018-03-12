@@ -19,20 +19,20 @@
 package com.wire.bots.sdk.user;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wire.bots.sdk.Configuration;
-import com.wire.bots.sdk.Logger;
-import com.wire.bots.sdk.OtrManager;
-import com.wire.bots.sdk.Util;
+import com.wire.bots.sdk.crypto.CryptoFile;
 import com.wire.bots.sdk.models.otr.PreKey;
 import com.wire.bots.sdk.server.model.InboundMessage;
-import com.wire.bots.sdk.server.resources.MessageResource;
+import com.wire.bots.sdk.server.model.NewBot;
+import com.wire.bots.sdk.storage.FileStorage;
+import com.wire.bots.sdk.tools.Logger;
+import com.wire.bots.sdk.tools.Util;
 import com.wire.bots.sdk.user.model.Message;
 import com.wire.bots.sdk.user.model.User;
 import com.wire.cryptobox.CryptoException;
 import org.glassfish.tyrus.client.ClientManager;
 
 import javax.websocket.*;
-import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -47,26 +47,24 @@ import java.util.concurrent.TimeUnit;
 public class Endpoint {
     private static final String WSS = "wss://%s-nginz-ssl.%s/await?access_token=%s&client=%s";
     private static final String PROD = "prod";
-    private static final String CLIENT_ID = "client.id";
-    private static final String TOKEN_ID = "token.id";
     private static final String ENV = "env";
-    private MessageResource messageResource;
-    private final Configuration config;
+    private final String path;
+    private UserMessageResource userMessageResource;
     private ClientManager client = null;
     private String token;
     private String cookie;
     private String clientId;
     private String botId;
 
-    public Endpoint(Configuration config) throws CryptoException {
-        this.config = config;
+    public Endpoint(String path) throws CryptoException {
+        this.path = path;
     }
 
-    public Session connectWebSocket(MessageResource messageResource) throws Exception {
+    public Session connectWebSocket(UserMessageResource userMessageResource) throws Exception {
         if (client == null) {
             client = ClientManager.createClient();
         }
-        this.messageResource = messageResource;
+        this.userMessageResource = userMessageResource;
 
         return client.connectToServer(this, getPath());
     }
@@ -77,17 +75,15 @@ public class Endpoint {
      * @param email     Email address
      * @param password  Plain text password
      * @param persisted True if you want to renew token every 15 mins
+     * @return UserId
      * @throws Exception
      */
     public String signIn(String email, String password, boolean persisted) throws Exception {
-        LoginClient wireClient = new LoginClient();
-        User login = wireClient.login(email, password);
+        User login = LoginClient.login(email, password);
         token = login.getToken();
         cookie = login.getCookie();
         botId = login.extractUserId();
-
-        String dataDir = String.format("%s/%s", config.getCryptoDir(), botId);
-        clientId = initDevice(dataDir, password, token);
+        clientId = initDevice(botId, password, token);
 
         if (persisted)
             initRenewal(15);
@@ -97,14 +93,13 @@ public class Endpoint {
 
     @OnMessage
     public void onMessage(InputStream rawInput) throws Exception {
-        //String s = IOUtils.toString(rawInput);
         ObjectMapper mapper = new ObjectMapper();
         Message message = mapper.readValue(rawInput, Message.class);
 
         for (InboundMessage payload : message.payload) {
             //Logger.info(payload.type);
             try {
-                messageResource.onNewMessage(botId, payload.conversation, payload);
+                userMessageResource.onNewMessage(botId, payload.conversation, payload);
             } catch (Exception e) {
                 Logger.warning(e.getMessage());
             }
@@ -129,31 +124,37 @@ public class Endpoint {
         return new URI(url);
     }
 
-    private static String initDevice(String dataDir, String password, String token)
-            throws Exception {
-        File base = new File(dataDir);
-        if (base.mkdirs())
-            Logger.info("Created: " + dataDir);
+    /**
+     * @param userId
+     * @param password
+     * @param token
+     * @return ClientId
+     * @throws Exception
+     */
+    private String initDevice(String userId, String password, String token) throws Exception {
+        FileStorage storage = new FileStorage(path, userId);
 
-        File clientIdFile = new File(String.format("%s/%s", base.getAbsolutePath(), CLIENT_ID));
+        try {
+            NewBot state = storage.getState();
+            Logger.info("initDevice: Existing ClientID: %s", state.client);
+            state.token = token;
 
-        File tokenFile = new File(String.format("%s/%s", base.getAbsolutePath(), TOKEN_ID));
-        Util.writeLine(token, tokenFile);
+            storage.saveState(state);
+            return state.client;
+        } catch (IOException ex) {
+            // register new device
+            try (CryptoFile cryptoFile = new CryptoFile(path, userId)) {
+                PreKey key = cryptoFile.newLastPreKey();
 
-        if (clientIdFile.exists()) {
-            String clientId = Util.readLine(clientIdFile);
-            Logger.info("initDevice: Existing ClientID: %s", clientId);
-            return clientId;
-        }
+                NewBot state = new NewBot();
+                state.id = userId;
+                state.client = LoginClient.registerClient(key, token, password);
+                state.token = token;
 
-        // register new device
-        try (OtrManager otrManager = new OtrManager(base.getAbsolutePath())) {
-            PreKey key = otrManager.newLastPreKey();
-            LoginClient login = new LoginClient();
-            String clientId = login.registerClient(key, token, password);
-            Util.writeLine(clientId, clientIdFile);
-            Logger.info("initDevice: New ClientID: %s", clientId);
-            return clientId;
+                storage.saveState(state);
+                Logger.info("initDevice: New ClientID: %s", state.client);
+                return state.client;
+            }
         }
     }
 
@@ -163,8 +164,6 @@ public class Endpoint {
             public void run() {
                 try {
                     token = API.renewAccessToken(cookie, token);
-                    File tokenFile = new File(String.format("%s/%s/%s", config.getCryptoDir(), botId, TOKEN_ID));
-                    Util.writeLine(token, tokenFile);
                 } catch (Exception e) {
                     Logger.warning("Failed periodic access_token renewal: " + e.getMessage());
                     e.printStackTrace();

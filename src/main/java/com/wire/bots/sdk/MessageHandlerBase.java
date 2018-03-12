@@ -167,7 +167,7 @@ public abstract class MessageHandlerBase {
 
     }
 
-    public void onOT(WireClient client, OTMessage otMessage) {
+    public void onCalling(WireClient client, String userId, String clientId, String content) {
 
     }
 }

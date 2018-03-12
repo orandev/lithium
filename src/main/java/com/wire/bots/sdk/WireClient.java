@@ -20,7 +20,6 @@ package com.wire.bots.sdk;
 
 import com.wire.bots.sdk.assets.IAsset;
 import com.wire.bots.sdk.assets.IGeneric;
-import com.wire.bots.sdk.assets.OT;
 import com.wire.bots.sdk.models.AssetKey;
 import com.wire.bots.sdk.models.otr.PreKey;
 import com.wire.bots.sdk.server.model.Conversation;
@@ -43,6 +42,14 @@ public interface WireClient extends Closeable {
      * @throws Exception
      */
     void sendText(String txt) throws Exception;
+
+    /**
+     * Post text to specific user
+     *
+     * @param txt Plain text to be posted into this conversation
+     * @throws Exception
+     */
+    void sendDirectText(String txt, String userId) throws Exception;
 
     /**
      * Post text into the conversation
@@ -81,6 +88,8 @@ public interface WireClient extends Closeable {
      * @throws Exception
      */
     void sendPicture(byte[] bytes, String mimeType) throws Exception;
+
+    void sendPicture(byte[] bytes, String mimeType, String userId) throws Exception;
 
     /**
      * Post previously uploaded picture
@@ -123,19 +132,10 @@ public interface WireClient extends Closeable {
 
     /**
      * Sends ping into conversation
+     *
      * @throws Exception
      */
     void ping() throws Exception;
-
-    void sendOT(OT ot) throws Exception;
-
-    /**
-     * This method is invoked by the sdk. It sends delivery receipt when the message is received
-     *
-     * @param msgId Message ID as received from the Backend
-     * @throws Exception
-     */
-    void sendDelivery(String msgId) throws Exception;
 
     /**
      * Post Like for a message
@@ -191,6 +191,15 @@ public interface WireClient extends Closeable {
     Collection<User> getUsers(Collection<String> userIds) throws IOException;
 
     /**
+     * Fetch users' profiles from the Backend
+     *
+     * @param userId User ID (UUID) that are being requested
+     * @return User profile (name, accent colour,...)
+     * @throws IOException
+     */
+    User getUser(String userId) throws IOException;
+
+    /**
      * Fetch conversation details from the Backend
      *
      * @return Conversation details including Conversation ID, Conversation name, List of participants
@@ -206,7 +215,7 @@ public interface WireClient extends Closeable {
      * @param user User ID as UUID
      * @throws IOException
      */
-    void acceptConnection(String user) throws IOException;
+    void acceptConnection(String user) throws Exception;
 
     /**
      * Decrypt cipher either using existing session or it creates new session from this cipher and decrypts
@@ -214,10 +223,10 @@ public interface WireClient extends Closeable {
      * @param userId   Sender's User id
      * @param clientId Sender's Client id
      * @param cypher   Encrypted, Base64 encoded string
-     * @return Decrypted blob
+     * @return Base64 encoded decrypted text
      * @throws Exception
      */
-    byte[] decrypt(String userId, String clientId, String cypher) throws Exception;
+    String decrypt(String userId, String clientId, String cypher) throws Exception;
 
     /**
      * Invoked by the sdk. Called once when the conversation is created
@@ -268,7 +277,7 @@ public interface WireClient extends Closeable {
      * @return Profile picture binary data
      * @throws IOException
      */
-    byte[] downloadProfilePicture(String assetKey) throws IOException;
+    byte[] downloadProfilePicture(String assetKey) throws Exception;
 
     /**
      * Uploads assert to backend. This method is used in conjunction with sendPicture(IGeneric)
@@ -279,4 +288,5 @@ public interface WireClient extends Closeable {
      */
     AssetKey uploadAsset(IAsset asset) throws Exception;
 
+    void call(String content) throws Exception;
 }
