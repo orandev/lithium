@@ -18,15 +18,45 @@
 
 package com.wire.bots.sdk.models;
 
-/**
- */
-public class ImageMessage extends MessageAssetBase {
-    private int height;
-    private int width;
-    private String tag;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.waz.model.Messages;
 
-    public ImageMessage(String messageId, String convId, String clientId, String userId) {
-        super(messageId, convId, clientId, userId);
+import java.util.UUID;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class ImageMessage extends MessageAssetBase {
+    @JsonProperty
+    private int height;
+    @JsonProperty
+    private int width;
+
+    @JsonCreator
+    public ImageMessage(@JsonProperty("messageId") UUID messageId,
+                        @JsonProperty("conversationId") UUID convId,
+                        @JsonProperty("clientId") String clientId,
+                        @JsonProperty("userId") UUID userId,
+                        @JsonProperty("assetKey") String assetKey,
+                        @JsonProperty("assetToken") String assetToken,
+                        @JsonProperty("otrKey") byte[] otrKey,
+                        @JsonProperty("mimeType") String mimeType,
+                        @JsonProperty("size") long size,
+                        @JsonProperty("sha256") byte[] sha256,
+                        @JsonProperty("name") String name) {
+        super(messageId, convId, clientId, userId, assetKey, assetToken, otrKey, mimeType, size, sha256, name);
+    }
+
+    public ImageMessage(MessageAssetBase base, Messages.Asset.ImageMetaData image) {
+        super(base);
+        setHeight(image.getHeight());
+        setWidth(image.getWidth());
+    }
+
+    public ImageMessage(UUID msgId, UUID convId, String clientId, UUID userId) {
+        super(msgId, convId, clientId, userId);
     }
 
     public int getHeight() {
@@ -37,19 +67,11 @@ public class ImageMessage extends MessageAssetBase {
         return width;
     }
 
-    public String getTag() {
-        return tag;
-    }
-
     public void setHeight(int height) {
         this.height = height;
     }
 
     public void setWidth(int width) {
         this.width = width;
-    }
-
-    public void setTag(String tag) {
-        this.tag = tag;
     }
 }

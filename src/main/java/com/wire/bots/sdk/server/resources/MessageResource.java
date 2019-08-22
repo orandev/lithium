@@ -18,57 +18,87 @@
 
 package com.wire.bots.sdk.server.resources;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wire.bots.cryptobox.CryptoException;
 import com.wire.bots.sdk.ClientRepo;
 import com.wire.bots.sdk.MessageHandlerBase;
 import com.wire.bots.sdk.WireClient;
-import com.wire.bots.sdk.server.model.InboundMessage;
+import com.wire.bots.sdk.exceptions.MissingStateException;
+import com.wire.bots.sdk.server.model.ErrorMessage;
+import com.wire.bots.sdk.server.model.Payload;
 import com.wire.bots.sdk.tools.AuthValidator;
 import com.wire.bots.sdk.tools.Logger;
+import io.swagger.annotations.*;
 
+import javax.validation.Valid;
+import javax.validation.constraints.NotNull;
 import javax.ws.rs.*;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import java.io.IOException;
+import java.util.UUID;
+import java.util.logging.Level;
 
+@Api
 @Produces(MediaType.APPLICATION_JSON)
+@Consumes(MediaType.APPLICATION_JSON)
 @Path("/bots/{bot}/messages")
 public class MessageResource extends MessageResourceBase {
-    private final AuthValidator validator;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public MessageResource(MessageHandlerBase handler, AuthValidator validator, ClientRepo repo) {
-        super(handler, repo);
-        this.validator = validator;
+        super(handler, validator, repo);
     }
 
     @POST
-    public Response newMessage(@HeaderParam("Authorization") String auth,
-                               @PathParam("bot") String bot,
-                               InboundMessage inbound) throws Exception {
+    @ApiOperation(value = "New OTR Message")
+    @ApiResponses(value = {
+            @ApiResponse(code = 403, message = "Invalid Authorization", response = ErrorMessage.class),
+            @ApiResponse(code = 503, message = "Missing bot's state object", response = ErrorMessage.class),
+            @ApiResponse(code = 200, message = "Alles gute")})
+    public Response newMessage(@ApiParam("Service token") @HeaderParam("Authorization") @NotNull String auth,
+                               @ApiParam("UUID Bot instance id") @PathParam("bot") UUID botId,
+                               @ApiParam("UUID Unique message id") @QueryParam("id") UUID messageID,
+                               @ApiParam @Valid @NotNull Payload payload) throws IOException {
 
-        if (!validator.validate(auth)) {
-            Logger.warning(String.format("Invalid auth. Got: '%s'",
-                    auth
-            ));
+        if (Logger.getLevel() == Level.FINE) {
+            String strPayload = objectMapper.writeValueAsString(payload);
+            Logger.debug("MessageResource: bot: %s, id: %s, %s", botId, messageID, strPayload);
+        }
+
+        if (!isValid(auth)) {
+            Logger.warning("%s, Invalid auth. Got: '%s'", botId, auth);
             return Response.
-                    ok("Invalid Authorization: " + auth).
-                    status(403).
+                    status(401).
+                    entity(new ErrorMessage("Invalid Authorization token")).
                     build();
         }
 
-        WireClient client = repo.getWireClient(bot);
-        if (client == null) {
+        if (messageID == null) {
+            messageID = UUID.randomUUID(); //todo fix this once Wire BE adds messageId into payload
+        }
+
+        try (WireClient client = getWireClient(botId, payload)) {
+            handleMessage(messageID, payload, client);
+        } catch (CryptoException e) {
+            Logger.error("newMessage: %s %s", botId, e);
+            respondWithError(botId, payload);
             return Response.
-                    ok().
+                    status(503).
+                    entity(new ErrorMessage(e.getMessage())).
+                    build();
+        } catch (MissingStateException e) {
+            Logger.error("newMessage: %s %s", botId, e);
+            return Response.
                     status(410).
+                    entity(new ErrorMessage(e.getMessage())).
                     build();
-        }
-
-        try {
-            handleMessage(inbound, client);
         } catch (Exception e) {
-            Logger.error("MessageResource::newMessage: %s", e);
+            e.printStackTrace();
+            Logger.error("newMessage: %s %s", botId, e);
             return Response.
                     status(400).
-                    entity(e).
+                    entity(new ErrorMessage(e.getMessage())).
                     build();
         }
 
@@ -76,5 +106,13 @@ public class MessageResource extends MessageResourceBase {
                 ok().
                 status(200).
                 build();
+    }
+
+    private void respondWithError(UUID botId, Payload payload) {
+        try (WireClient client = getWireClient(botId, payload)) {
+            client.sendReaction(UUID.randomUUID(), "");
+        } catch (Exception e1) {
+            Logger.error("respondWithError: bot: %s %s", botId, e1);
+        }
     }
 }

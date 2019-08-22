@@ -47,28 +47,37 @@ public class Picture implements IGeneric, IAsset {
     private String assetKey;
     private String assetToken;
     private boolean isPublic;
-    private String retention = "volatile";
-    private String messageId = UUID.randomUUID().toString();
+    private String retention = "expiring";
+    private UUID messageId = UUID.randomUUID();
     private long expires;
 
     public Picture(byte[] bytes, String mime) throws IOException {
         imageData = bytes;
+        size = bytes.length;
         mimeType = mime;
-        loadBufferImage();
+        BufferedImage bufferedImage = loadBufferImage(bytes);
+        width = bufferedImage.getWidth();
+        height = bufferedImage.getHeight();
     }
 
     public Picture(byte[] bytes) throws IOException {
         imageData = bytes;
-        this.mimeType = Util.extractMimeType(imageData);
-        loadBufferImage();
+        mimeType = Util.extractMimeType(imageData);
+        size = bytes.length;
+        BufferedImage bufferedImage = loadBufferImage(bytes);
+        width = bufferedImage.getWidth();
+        height = bufferedImage.getHeight();
     }
 
     public Picture(String url) throws IOException {
         try (InputStream input = new URL(url).openStream()) {
             imageData = Util.toByteArray(input);
         }
-        this.mimeType = Util.extractMimeType(imageData);
-        loadBufferImage();
+        mimeType = Util.extractMimeType(imageData);
+        size = imageData.length;
+        BufferedImage bufferedImage = loadBufferImage(imageData);
+        width = bufferedImage.getWidth();
+        height = bufferedImage.getHeight();
     }
 
     public Picture() {
@@ -95,7 +104,7 @@ public class Picture implements IGeneric, IAsset {
     @Override
     public Messages.GenericMessage createGenericMsg() throws Exception {
         Messages.GenericMessage.Builder ret = Messages.GenericMessage.newBuilder()
-                .setMessageId(messageId);
+                .setMessageId(getMessageId().toString());
 
         Messages.Asset.ImageMetaData.Builder metaData = Messages.Asset.ImageMetaData.newBuilder()
                 .setHeight(height)
@@ -223,12 +232,9 @@ public class Picture implements IGeneric, IAsset {
         this.size = size;
     }
 
-    public String getMessageId() {
+    @Override
+    public UUID getMessageId() {
         return messageId;
-    }
-
-    public void setMessageId(String messageId) {
-        this.messageId = messageId;
     }
 
     public long getExpires() {
@@ -239,12 +245,9 @@ public class Picture implements IGeneric, IAsset {
         this.expires = expires;
     }
 
-    private void loadBufferImage() throws IOException {
+    private BufferedImage loadBufferImage(byte[] imageData) throws IOException {
         try (InputStream input = new ByteArrayInputStream(imageData)) {
-            BufferedImage bufferedImage = ImageIO.read(input);
-            width = bufferedImage.getWidth();
-            height = bufferedImage.getHeight();
-            size = imageData.length;
+            return ImageIO.read(input);
         }
     }
 }

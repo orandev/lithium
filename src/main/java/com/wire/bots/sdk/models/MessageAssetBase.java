@@ -18,20 +18,48 @@
 
 package com.wire.bots.sdk.models;
 
+import com.waz.model.Messages;
+
+import java.util.UUID;
+
 /**
  */
-public abstract class MessageAssetBase extends MessageBase {
+public class MessageAssetBase extends MessageBase {
     private String assetKey;
     private String assetToken;
     private byte[] otrKey;
     private String mimeType;
     private long size;
-    private String name;
     private byte[] sha256;
-    private byte[] data;  //decrypted
+    private String name;
 
-    public MessageAssetBase(String msgId, String convId, String clientId, String userId) {
+    public MessageAssetBase(UUID msgId, UUID convId, String clientId, UUID userId,
+                            String assetKey, String assetToken, byte[] otrKey, String mimeType, long size,
+                            byte[] sha256, String name) {
         super(msgId, convId, clientId, userId);
+        this.assetKey = assetKey;
+        this.assetToken = assetToken;
+        this.otrKey = otrKey;
+        this.mimeType = mimeType;
+        this.size = size;
+        this.sha256 = sha256;
+        this.name = name;
+    }
+
+    public MessageAssetBase(UUID msgId, UUID convId, String clientId, UUID userId) {
+        super(msgId, convId, clientId, userId);
+    }
+
+    MessageAssetBase(MessageAssetBase base) {
+        super(base.messageId, base.conversationId, base.clientId, base.userId);
+        assetKey = base.assetKey;
+        assetToken = base.assetToken;
+        otrKey = base.otrKey;
+        mimeType = base.mimeType;
+        size = base.size;
+        sha256 = base.sha256;
+        name = base.name;
+        time = base.time;
     }
 
     public void setSize(long size) {
@@ -74,14 +102,6 @@ public abstract class MessageAssetBase extends MessageBase {
         this.assetKey = assetKey;
     }
 
-    public void setName(String name) {
-        this.name = name;
-    }
-
-    public String getName() {
-        return name;
-    }
-
     public void setSha256(byte[] sha256) {
         this.sha256 = sha256;
     }
@@ -90,11 +110,28 @@ public abstract class MessageAssetBase extends MessageBase {
         return sha256;
     }
 
-    public byte[] getData() {
-        return data;
+    public String getName() {
+        return name;
     }
 
-    public void setData(byte[] data) {
-        this.data = data;
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public void fromRemote(Messages.Asset.RemoteData remoteData) {
+        if (remoteData != null) {
+            setAssetKey(remoteData.getAssetId());
+            setAssetToken(remoteData.hasAssetToken() ? remoteData.getAssetToken() : null);
+            setOtrKey(remoteData.getOtrKey().toByteArray());
+            setSha256(remoteData.getSha256().toByteArray());
+        }
+    }
+
+    public void fromOrigin(Messages.Asset.Original original) {
+        if (original != null) {
+            setMimeType(original.getMimeType());
+            setSize(original.getSize());
+            setName(original.hasName() ? original.getName() : null);
+        }
     }
 }

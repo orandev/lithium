@@ -18,13 +18,29 @@
 
 package com.wire.bots.sdk.models;
 
-/**
- */
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.waz.model.Messages;
+
+import java.util.UUID;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class AudioMessage extends MessageAssetBase {
+    @JsonProperty
     private long duration;
 
-    public AudioMessage(String msgId, String convId, String clientId, String userId) {
-        super(msgId, convId, clientId, userId);
+    @JsonCreator
+    public AudioMessage(@JsonProperty("messageId") UUID messageId,
+                        @JsonProperty("conversationId") UUID convId,
+                        @JsonProperty("clientId") String clientId,
+                        @JsonProperty("userId") UUID userId) {
+        super(messageId, convId, clientId, userId);
+    }
+
+    public AudioMessage(MessageAssetBase base, Messages.Asset.AudioMetaData audio) {
+        super(base);
+        setDuration(audio.getDurationInMillis());
     }
 
     public void setDuration(long duration) {

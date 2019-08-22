@@ -1,107 +1,217 @@
 package com.wire.bots.sdk.server.resources;
 
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.waz.model.Messages;
+import com.wire.bots.cryptobox.CryptoException;
 import com.wire.bots.sdk.ClientRepo;
 import com.wire.bots.sdk.MessageHandlerBase;
 import com.wire.bots.sdk.WireClient;
-import com.wire.bots.sdk.models.otr.PreKey;
 import com.wire.bots.sdk.server.GenericMessageProcessor;
-import com.wire.bots.sdk.server.model.InboundMessage;
+import com.wire.bots.sdk.server.model.Conversation;
+import com.wire.bots.sdk.server.model.Member;
+import com.wire.bots.sdk.server.model.Payload;
+import com.wire.bots.sdk.server.model.SystemMessage;
+import com.wire.bots.sdk.tools.AuthValidator;
 import com.wire.bots.sdk.tools.Logger;
 
-import java.util.ArrayList;
+import java.io.IOException;
 import java.util.Base64;
-import java.util.Collections;
+import java.util.List;
+import java.util.UUID;
 
 public abstract class MessageResourceBase {
+    private final AuthValidator validator;
+    private final ClientRepo repo;
+    private final MessageHandlerBase handler;
 
-    protected final MessageHandlerBase handler;
-    protected final ClientRepo repo;
-
-    public MessageResourceBase(MessageHandlerBase handler, ClientRepo repo) {
+    public MessageResourceBase(MessageHandlerBase handler, AuthValidator validator, ClientRepo repo) {
         this.handler = handler;
+        this.validator = validator;
         this.repo = repo;
     }
 
-    protected void handleMessage(InboundMessage inbound, WireClient client) throws Exception {
-        InboundMessage.Data data = inbound.data;
-        switch (inbound.type) {
+    protected void handleMessage(UUID id, Payload payload, WireClient client) throws Exception {
+        Payload.Data data = payload.data;
+        UUID botId = client.getId();
+
+        switch (payload.type) {
             case "conversation.otr-message-add": {
+                UUID from = payload.from;
+
+                Logger.debug("conversation.otr-message-add: bot: %s from: %s:%s", botId, from, data.sender);
+
                 GenericMessageProcessor processor = new GenericMessageProcessor(client, handler);
 
-                String encoded = client.decrypt(inbound.from, data.sender, data.text);
-                byte[] decode = Base64.getDecoder().decode(encoded);
-                Messages.GenericMessage genericMessage = Messages.GenericMessage.parseFrom(decode);
+                Messages.GenericMessage message = decrypt(client, payload);
 
-                handler.onEvent(client, inbound.from, genericMessage);
+                boolean process = processor.process(from,
+                        data.sender,
+                        payload.convId,
+                        payload.time,
+                        message);
 
-                processor.process(inbound.from, data.sender, genericMessage);
+                if (process) {
+                    UUID messageId = UUID.fromString(message.getMessageId());
+                    processor.cleanUp(messageId);
+                }
+
+                handler.onEvent(client, payload.from, message);
             }
             break;
             case "conversation.member-join": {
-                String botId = client.getId();
-                //Logger.info("conversation.member-join: bot: %s", botId);
+                Logger.debug("conversation.member-join: bot: %s", botId);
 
                 // Check if this bot got added to the conversation
-                if (data.userIds.remove(botId)) {
-                    handler.onNewConversation(client);
+                List<UUID> participants = data.userIds;
+                if (participants.remove(botId)) {
+                    SystemMessage systemMessage = getSystemMessage(id, payload);
+                    systemMessage.conversation = client.getConversation();
+                    systemMessage.type = "conversation.create"; //hack the type
+
+                    handler.onNewConversation(client, systemMessage);
+                    return;
                 }
 
-                int minAvailable = 8 * data.userIds.size();
-                if (minAvailable > 0) {
-                    ArrayList<Integer> availablePrekeys = client.getAvailablePrekeys();
-                    availablePrekeys.remove(new Integer(65535));  //remove last prekey
-                    if (availablePrekeys.size() < minAvailable) {
-                        Integer lastKeyOffset = Collections.max(availablePrekeys);
-                        ArrayList<PreKey> keys = client.newPreKeys(lastKeyOffset + 1, minAvailable);
-                        client.uploadPreKeys(keys);
-                        Logger.info("Uploaded " + keys.size() + " prekeys");
-                    }
-                    handler.onMemberJoin(client, data.userIds);
-                }
+                // Check if we still have some prekeys available. Upload new prekeys if needed
+                handler.validatePreKeys(client, participants.size());
+
+                SystemMessage systemMessage = getSystemMessage(id, payload);
+                systemMessage.users = data.userIds;
+
+                handler.onMemberJoin(client, systemMessage);
             }
             break;
             case "conversation.member-leave": {
-                String botId = client.getId();
-                //Logger.info("conversation.member-leave: bot: %s", botId);
+                Logger.debug("conversation.member-leave: bot: %s", botId);
+
+                SystemMessage systemMessage = getSystemMessage(id, payload);
+                systemMessage.users = data.userIds;
 
                 // Check if this bot got removed from the conversation
-                if (data.userIds.remove(botId)) {
-                    repo.removeClient(botId);
-                    handler.onBotRemoved(botId);
+                List<UUID> participants = data.userIds;
+                if (participants.remove(botId)) {
+                    handler.onBotRemoved(botId, systemMessage);
                     repo.purgeBot(botId);
+                    return;
                 }
 
-                if (!data.userIds.isEmpty()) {
-                    handler.onMemberLeave(client, data.userIds);
+                if (!participants.isEmpty()) {
+                    handler.onMemberLeave(client, systemMessage);
                 }
             }
             break;
             case "conversation.delete": {
-                String botId = client.getId();
-                Logger.info("conversation.delete: bot: %s", botId);
+                Logger.debug("conversation.delete: bot: %s", botId);
+                SystemMessage systemMessage = getSystemMessage(id, payload);
 
                 // Cleanup
-                repo.removeClient(botId);
-                handler.onBotRemoved(botId);
+                handler.onBotRemoved(botId, systemMessage);
                 repo.purgeBot(botId);
             }
             break;
-            // Legacy code starts here
+            case "conversation.create": {
+                Logger.debug("conversation.create: bot: %s", botId);
+
+                SystemMessage systemMessage = getSystemMessage(id, payload);
+                if (systemMessage.conversation.members != null) {
+                    Member self = new Member();
+                    self.id = botId;
+                    systemMessage.conversation.members.add(self);
+                }
+
+                handler.onNewConversation(client, systemMessage);
+            }
+            break;
+            case "conversation.rename": {
+                Logger.debug("conversation.rename: bot: %s", botId);
+
+                SystemMessage systemMessage = getSystemMessage(id, payload);
+
+                handler.onConversationRename(client, systemMessage);
+            }
+            break;
+            // UserMode code starts here
             case "user.connection": {
-                if (inbound.connection.status.equals("pending")) {
-                    client.acceptConnection(inbound.connection.to);
+                Payload.Connection connection = payload.connection;
+                Logger.debug("user.connection: bot: %s, from: %s to: %s status: %s",
+                        botId,
+                        connection.from,
+                        connection.to,
+                        connection.status);
+
+                boolean accepted = handler.onConnectRequest(client, connection.from, connection.to, connection.status);
+                if (accepted) {
+                    Conversation conversation = new Conversation();
+                    conversation.id = connection.convId;
+                    SystemMessage systemMessage = new SystemMessage();
+                    systemMessage.id = id;
+                    systemMessage.from = connection.from;
+                    systemMessage.type = payload.type;
+                    systemMessage.conversation = conversation;
+
+                    handler.onNewConversation(client, systemMessage);
                 }
             }
             break;
-            case "conversation.create": {
-                handler.onNewConversation(client);
-            }
-            break;
-            // Legacy code ends here
+            // UserMode code ends here
             default:
-                Logger.warning("Unknown event: %s, bot: %s", inbound.type, client.getId());
+                Logger.debug("Unknown event: %s", payload.type);
                 break;
         }
+    }
+
+    private SystemMessage getSystemMessage(UUID messageId, Payload payload) {
+        SystemMessage systemMessage = new SystemMessage();
+        systemMessage.id = messageId;
+        systemMessage.from = payload.from;
+        systemMessage.time = payload.time;
+        systemMessage.type = payload.type;
+        systemMessage.convId = payload.convId;
+
+        systemMessage.conversation = new Conversation();
+        systemMessage.conversation.id = payload.convId;
+        systemMessage.conversation.creator = payload.data.creator;
+        systemMessage.conversation.name = payload.data.name;
+        if (payload.data.members != null)
+            systemMessage.conversation.members = payload.data.members.others;
+
+        return systemMessage;
+    }
+
+    protected WireClient getWireClient(UUID botId, Payload payload) throws IOException, CryptoException {
+        return repo.getClient(botId);
+    }
+
+    protected boolean isValid(String auth) {
+        return validator.validate(auth);
+    }
+
+    protected void handleUpdate(UUID id, Payload payload) {
+        switch (payload.type) {
+            case "team.member-join": {
+                Logger.debug("%s: team: %s, user: %s", payload.type, payload.team, payload.data.user);
+                handler.onNewTeamMember(id, payload.team, payload.data.user);
+            }
+            break;
+            case "user.update": {
+                Logger.debug("%s: id: %s", payload.type, payload.user.id);
+                handler.onUserUpdate(id, payload.user.id);
+            }
+            break;
+            default:
+                Logger.debug("Unknown event: %s", payload.type);
+                break;
+        }
+    }
+
+    private Messages.GenericMessage decrypt(WireClient client, Payload payload)
+            throws CryptoException, InvalidProtocolBufferException {
+        UUID from = payload.from;
+        String sender = payload.data.sender;
+        String cipher = payload.data.text;
+
+        String encoded = client.decrypt(from, sender, cipher);
+        byte[] decoded = Base64.getDecoder().decode(encoded);
+        return Messages.GenericMessage.parseFrom(decoded);
     }
 }

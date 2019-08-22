@@ -21,6 +21,7 @@ package com.wire.bots.sdk.models.otr;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import javax.validation.constraints.NotNull;
+import java.util.UUID;
 
 public class OtrMessage {
     @JsonProperty
@@ -31,8 +32,8 @@ public class OtrMessage {
     private final Recipients recipients;
 
 
-    public OtrMessage(String clinetId, Recipients recipients) {
-        this.sender = clinetId;
+    public OtrMessage(String clientId, Recipients recipients) {
+        this.sender = clientId;
         this.recipients = recipients;
     }
 
@@ -40,7 +41,7 @@ public class OtrMessage {
         recipients.add(rec);
     }
 
-    public String get(String userId, String clientId) {
+    public String get(UUID userId, String clientId) {
         return recipients.get(userId, clientId);
     }
 
@@ -50,5 +51,9 @@ public class OtrMessage {
             count += devs.size();
         }
         return count;
+    }
+
+    public String getSender() {
+        return sender;
     }
 }

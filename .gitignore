@@ -4,6 +4,8 @@
 .idea/
 *.iml
 target/
-vendor/
 data/
-docker.sh
+libs/
+.classpath
+.project
+.settings

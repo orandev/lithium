@@ -22,15 +22,21 @@ import com.wire.bots.sdk.MessageHandlerBase;
 import com.wire.bots.sdk.crypto.Crypto;
 import com.wire.bots.sdk.factories.CryptoFactory;
 import com.wire.bots.sdk.factories.StorageFactory;
+import com.wire.bots.sdk.server.model.ErrorMessage;
 import com.wire.bots.sdk.server.model.NewBot;
 import com.wire.bots.sdk.server.model.NewBotResponseModel;
 import com.wire.bots.sdk.tools.AuthValidator;
 import com.wire.bots.sdk.tools.Logger;
+import io.swagger.annotations.*;
 
+import javax.validation.Valid;
+import javax.validation.constraints.NotNull;
 import javax.ws.rs.*;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import java.util.UUID;
 
+@Api
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @Path("/bots")
@@ -41,37 +47,45 @@ public class BotsResource {
     private final CryptoFactory cryptoF;
     private final AuthValidator validator;
 
-    public BotsResource(MessageHandlerBase handler, StorageFactory storageF, CryptoFactory cryptoF, AuthValidator validator) {
+    public BotsResource(MessageHandlerBase handler, StorageFactory storageF, CryptoFactory cryptoF, AuthValidator val) {
         this.handler = handler;
         this.storageF = storageF;
         this.cryptoF = cryptoF;
-        this.validator = validator;
+        this.validator = val;
     }
 
     @POST
-    public Response newBot(@HeaderParam("Authorization") String auth, NewBot newBot) throws Exception {
+    @ApiOperation(value = "New Bot instance", response = NewBotResponseModel.class, code = 201)
+    @ApiResponses(value = {
+            @ApiResponse(code = 403, message = "Invalid Authorization", response = ErrorMessage.class),
+            @ApiResponse(code = 409, message = "Bot not accepted (whitelist?)", response = ErrorMessage.class),
+            @ApiResponse(code = 201, message = "Alles gute")})
+    public Response newBot(
+            @ApiParam("Service's auth Bearer token") @HeaderParam("Authorization") @NotNull String auth,
+            @ApiParam @Valid @NotNull NewBot newBot) throws Exception {
+
         if (!validator.validate(auth)) {
             Logger.warning("Invalid auth '%s'", auth);
-            return Response.
-                    ok("Invalid Authorization: " + auth).
-                    status(403).
-                    build();
+            return Response
+                    .status(401)
+                    .entity(new ErrorMessage("Invalid Authorization: " + auth))
+                    .build();
         }
 
         if (!handler.onNewBot(newBot))
-            return Response.
-                    status(409).
-                    build();
+            return Response
+                    .status(409)
+                    .entity(new ErrorMessage("User not whitelisted or service does not accept new instances atm"))
+                    .build();
 
-
-        String botId = newBot.id;
+        UUID botId = newBot.id;
         boolean saveState = storageF.create(botId).saveState(newBot);
         if (!saveState) {
             Logger.warning("Failed to save the state. Bot: %s", botId);
         }
 
         NewBotResponseModel ret = new NewBotResponseModel();
-        ret.name = handler.getName();
+        ret.name = handler.getName(newBot);
         ret.accentId = handler.getAccentColour();
         String profilePreview = handler.getSmallProfilePicture();
         if (profilePreview != null) {
@@ -83,9 +97,10 @@ public class BotsResource {
             ret.addAsset(profileBig, "complete");
         }
 
-        Crypto crypto = cryptoF.create(botId);
-        ret.lastPreKey = crypto.newLastPreKey();
-        ret.preKeys = crypto.newPreKeys(0, newBot.conversation.members.size() * 8);
+        try (Crypto crypto = cryptoF.create(botId)) {
+            ret.lastPreKey = crypto.newLastPreKey();
+            ret.preKeys = crypto.newPreKeys(0, 50);
+        }
 
         return Response.
                 ok(ret).

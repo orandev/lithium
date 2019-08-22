@@ -18,12 +18,28 @@
 
 package com.wire.bots.sdk.models;
 
-/**
- */
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import java.util.UUID;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class TextMessage extends MessageBase {
+    @JsonProperty
     private String text;
 
-    public TextMessage(String messageId, String convId, String clientId, String userId) {
+    @JsonProperty
+    private UUID quotedMessageId;
+
+    @JsonProperty
+    private byte[] quotedMessageSha256;
+
+    @JsonCreator
+    public TextMessage(@JsonProperty("messageId") UUID messageId,
+                       @JsonProperty("conversationId") UUID convId,
+                       @JsonProperty("clientId") String clientId,
+                       @JsonProperty("userId") UUID userId) {
         super(messageId, convId, clientId, userId);
     }
 
@@ -33,5 +49,21 @@ public class TextMessage extends MessageBase {
 
     public void setText(String text) {
         this.text = text;
+    }
+
+    public UUID getQuotedMessageId() {
+        return quotedMessageId;
+    }
+
+    public void setQuotedMessageId(UUID quotedMessageId) {
+        this.quotedMessageId = quotedMessageId;
+    }
+
+    public byte[] getQuotedMessageSha256() {
+        return quotedMessageSha256;
+    }
+
+    public void setQuotedMessageSha256(byte[] quotedMessageSha256) {
+        this.quotedMessageSha256 = quotedMessageSha256;
     }
 }

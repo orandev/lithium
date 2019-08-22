@@ -1,4 +1,4 @@
-//
+package com.wire.bots.sdk;//
 // Wire
 // Copyright (C) 2016 Wire Swiss GmbH
 //
@@ -16,8 +16,9 @@
 // along with this program. If not, see http://www.gnu.org/licenses/.
 //
 
-import com.wire.bots.sdk.crypto.Crypto;
-import com.wire.bots.sdk.crypto.CryptoFile;
+import com.wire.bots.sdk.crypto.CryptoDatabase;
+import com.wire.bots.sdk.helpers.MemStorage;
+import com.wire.bots.sdk.helpers.Util;
 import com.wire.bots.sdk.models.otr.Missing;
 import com.wire.bots.sdk.models.otr.PreKey;
 import com.wire.bots.sdk.models.otr.PreKeys;
@@ -26,59 +27,44 @@ import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.HashMap;
+import java.util.UUID;
 
-public class CryptoFileTest {
+public class CryptoDatabaseTest {
 
-    private final static String bobId = "bob";
-    private final static String bobClientId = "bob_device";
-    private final static String aliceId = "alice";
-    private final static String aliceClientId = "alice_device";
-    private final static String DATA = "./data";
-    private static Crypto alice;
-    private static Crypto bob;
+    private final static UUID bobId;
+    private final static UUID aliceId;
+    private static CryptoDatabase alice;
+    private static CryptoDatabase bob;
     private static PreKeys bobKeys;
     private static PreKeys aliceKeys;
 
+    static {
+        aliceId = UUID.randomUUID();
+        bobId = UUID.randomUUID();
+    }
+    
     @BeforeClass
     public static void setUp() throws Exception {
-        alice = new CryptoFile(DATA, aliceId);
-        bob = new CryptoFile(DATA, bobId);
+        MemStorage storage = new MemStorage();
+        alice = new CryptoDatabase(aliceId, storage);
+        bob = new CryptoDatabase(bobId, storage);
 
-        ArrayList<PreKey> preKeys = bob.newPreKeys(0, 1);
-        bobKeys = getPreKeys(preKeys, bobClientId, bobId);
+        ArrayList<PreKey> preKeys = bob.newPreKeys(0, 10);
+        bobKeys = new PreKeys(preKeys, "bob", bobId);
 
-        preKeys = alice.newPreKeys(0, 1);
-        aliceKeys = getPreKeys(preKeys, aliceClientId, aliceId);
-    }
-
-    private static File mkTmpDir(String name) throws IOException {
-        File tmpDir = File.createTempFile(name, "");
-        tmpDir.delete();
-        tmpDir.mkdir();
-        return tmpDir;
-    }
-
-    private static PreKeys getPreKeys(ArrayList<PreKey> array, String clientId, String userId) {
-        HashMap<String, PreKey> devs = new HashMap<>();
-        for (PreKey key : array) {
-            devs.put(clientId, key);
-        }
-
-        PreKeys keys = new PreKeys();
-        keys.put(userId, devs);
-        return keys;
+        preKeys = alice.newPreKeys(0, 10);
+        aliceKeys = new PreKeys(preKeys, "alice", aliceId);
     }
 
     @AfterClass
     public static void clean() throws IOException {
         alice.close();
         bob.close();
+        Util.deleteDir("data");
     }
 
     @Test
@@ -89,10 +75,10 @@ public class CryptoFileTest {
         // Encrypt using prekeys
         Recipients encrypt = alice.encrypt(bobKeys, textBytes);
 
-        String base64Encoded = encrypt.get(bobId, bobClientId);
+        String base64Encoded = encrypt.get(bobId, "bob");
 
         // Decrypt using initSessionFromMessage
-        String decrypt = bob.decrypt(aliceId, aliceClientId, base64Encoded);
+        String decrypt = bob.decrypt(aliceId, "alice", base64Encoded);
         byte[] decode = Base64.getDecoder().decode(decrypt);
 
         assert Arrays.equals(decode, textBytes);
@@ -106,10 +92,10 @@ public class CryptoFileTest {
 
         Recipients encrypt = bob.encrypt(aliceKeys, textBytes);
 
-        String base64Encoded = encrypt.get(aliceId, aliceClientId);
+        String base64Encoded = encrypt.get(aliceId, "alice");
 
         // Decrypt using initSessionFromMessage
-        String decrypt = alice.decrypt(bobId, bobClientId, base64Encoded);
+        String decrypt = alice.decrypt(bobId, "bob", base64Encoded);
         byte[] decode = Base64.getDecoder().decode(decrypt);
 
         assert Arrays.equals(decode, textBytes);
@@ -122,13 +108,13 @@ public class CryptoFileTest {
         byte[] textBytes = text.getBytes();
 
         Missing devices = new Missing();
-        devices.add(aliceId, aliceClientId);
+        devices.add(aliceId, "alice");
         Recipients encrypt = bob.encrypt(devices, textBytes);
 
-        String base64Encoded = encrypt.get(aliceId, aliceClientId);
+        String base64Encoded = encrypt.get(aliceId, "alice");
 
         // Decrypt using session
-        String decrypt = alice.decrypt(bobId, bobClientId, base64Encoded);
+        String decrypt = alice.decrypt(bobId, "bob", base64Encoded);
         byte[] decode = Base64.getDecoder().decode(decrypt);
 
         assert Arrays.equals(decode, textBytes);

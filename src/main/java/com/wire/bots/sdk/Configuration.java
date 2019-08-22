@@ -18,6 +18,11 @@
 
 package com.wire.bots.sdk;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import io.dropwizard.client.JerseyClientConfiguration;
+import io.federecio.dropwizard.swagger.SwaggerBundleConfiguration;
+
+import javax.validation.Valid;
 import javax.validation.constraints.NotNull;
 
 /**
@@ -25,25 +30,48 @@ import javax.validation.constraints.NotNull;
  */
 public class Configuration extends io.dropwizard.Configuration {
 
-    /**
-     * Path to the directory that will hold the cryptoBox data.
-     */
+    @JsonProperty("swagger")
+    public SwaggerBundleConfiguration swagger;
+
+    @Valid
     @NotNull
-    public String data;
+    public JerseyClientConfiguration jerseyClient = new JerseyClientConfiguration();
+
+    @JsonProperty("jerseyClient")
+    public JerseyClientConfiguration getJerseyClientConfiguration() {
+        return jerseyClient;
+    }
+
+    @JsonProperty("jerseyClient")
+    public void setJerseyClientConfiguration(JerseyClientConfiguration jerseyClient) {
+        this.jerseyClient = jerseyClient;
+    }
 
     /**
      * Authentication token
      */
+    @JsonProperty
     @NotNull
     public String auth;
 
-    private static String propOrEnv(String prop, boolean strict) {
+    /**
+     * The storage for the State and Cryptobox
+     */
+    @NotNull
+    @JsonProperty
+    public DB db;
+
+    /**
+     * Set to True if you want to run the bot as the User. Requires email/password System properties set
+     */
+    public boolean userMode = false;
+
+    public static String propOrEnv(String prop, boolean strict) {
         final String env = prop.replace('.', '_').toUpperCase();
         final String val = System.getProperty(prop, System.getenv(env));
         if (val == null && strict) {
             throw new ConfigValueNotFoundException(prop + " (" + env + ") not found");
         }
-
         return val;
     }
 
@@ -56,12 +84,27 @@ public class Configuration extends io.dropwizard.Configuration {
         }
     }
 
-    public String getData() {
-        return data;
-    }
-
     public String getAuth() {
         return auth;
+    }
+
+    public DB getDB() {
+        return db;
+    }
+
+    public SwaggerBundleConfiguration getSwagger() {
+        return swagger;
+    }
+
+    public static class DB {
+        public String host;
+        public Integer port;
+        public String database = "";
+        public String driver; // like: postgresql or fs
+        public String user;
+        public String password;
+        public String url; // a database url of the form: jdbc:`subprotocol`:`subname` or `file:///path/to/data/folder`
+        public Integer timeout = 5000;
     }
 
     public final static class ConfigValueNotFoundException extends RuntimeException {

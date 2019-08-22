@@ -22,28 +22,47 @@ import com.waz.model.Messages;
 
 import java.util.UUID;
 
-public class Text implements IGeneric {
+public class MessageText implements IGeneric {
     private final String text;
+    private final UUID mentionUser;
+    private final int offset;
+    private final int len;
     private final long expires;
-    private String messageId = UUID.randomUUID().toString();
+    private UUID messageId = UUID.randomUUID();
 
-    public Text(String text) {
-        this.text = text;
-        this.expires = 0;
+    public MessageText(String text) {
+        this(text, 0, null, 0, 0);
     }
 
-    public Text(String text, long expires) {
+    public MessageText(String text, long expires) {
+        this(text, expires, null, 0, 0);
+    }
+
+    public MessageText(String text, long expires, UUID mentionUser, int offset, int len) {
         this.text = text;
+        this.mentionUser = mentionUser;
+        this.offset = offset;
+        this.len = len;
         this.expires = expires;
     }
 
     @Override
-    public Messages.GenericMessage createGenericMsg() throws Exception {
+    public Messages.GenericMessage createGenericMsg() {
         Messages.GenericMessage.Builder ret = Messages.GenericMessage.newBuilder()
-                .setMessageId(messageId);
+                .setMessageId(getMessageId().toString());
 
         Messages.Text.Builder text = Messages.Text.newBuilder()
-                .setContent(this.text);
+                .setContent(this.text)
+                .setExpectsReadConfirmation(true);
+
+        if (mentionUser != null) {
+            Messages.Mention.Builder mention = Messages.Mention.newBuilder()
+                    .setUserId(mentionUser.toString())
+                    .setLength(len)
+                    .setStart(offset);
+
+            text.addMentions(mention);
+        }
 
         if (expires > 0) {
             Messages.Ephemeral.Builder ephemeral = Messages.Ephemeral.newBuilder()
@@ -60,7 +79,8 @@ public class Text implements IGeneric {
                 .build();
     }
 
-    public void setMessageId(String messageId) {
-        this.messageId = messageId;
+    @Override
+    public UUID getMessageId() {
+        return messageId;
     }
 }

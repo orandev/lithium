@@ -18,7 +18,7 @@
 
 package com.wire.bots.sdk;
 
-import com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.wire.bots.sdk.assets.IAsset;
 import com.wire.bots.sdk.exceptions.HttpException;
 import com.wire.bots.sdk.models.AssetKey;
@@ -28,44 +28,58 @@ import com.wire.bots.sdk.server.model.NewBotResponseModel;
 import com.wire.bots.sdk.server.model.User;
 import com.wire.bots.sdk.tools.Logger;
 import com.wire.bots.sdk.tools.Util;
-import org.glassfish.jersey.client.ClientConfig;
-import org.glassfish.jersey.client.JerseyClientBuilder;
+import org.glassfish.jersey.media.multipart.BodyPart;
+import org.glassfish.jersey.media.multipart.MultiPart;
 
+import javax.ws.rs.client.Client;
 import javax.ws.rs.client.Entity;
 import javax.ws.rs.client.Invocation;
 import javax.ws.rs.client.WebTarget;
-import javax.ws.rs.core.GenericType;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
+import javax.ws.rs.core.*;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.UUID;
 
-class API {
+public class API implements Backend {
 
-    private static final WebTarget target;
-    private static final String ASSETS = "assets";
-    private static final String AUTHORIZATION = "Authorization";
-    private static final String CLIENT = "client";
-    private static final String PREKEYS = "prekeys";
-    private static final String USERS = "users";
-
-    static {
-        ClientConfig cfg = new ClientConfig(JacksonJsonProvider.class);
-        target = JerseyClientBuilder.createClient(cfg)
-                .target(Util.getHost())
-                .path("bot");
-    }
+    private final WebTarget messages;
+    private final WebTarget assets;
+    private final WebTarget client;
+    private final WebTarget prekeys;
+    private final WebTarget users;
+    private final WebTarget conversation;
+    private final WebTarget bot;
 
     private final String token;
 
-    API(String token) {
+    public API(Client httpClient, String token) {
         this.token = token;
+
+        bot = httpClient
+                .target(Util.getHost())
+                .path("bot");
+        messages = bot
+                .path("messages");
+        assets = bot
+                .path("assets");
+        users = bot
+                .path("users");
+        conversation = bot
+                .path("conversation");
+        client = bot
+                .path("client")
+                .path("prekeys");
+        prekeys = users
+                .path("prekeys");
     }
 
-    private static WebTarget getTarget() {
-        return target;
+    public Response options() {
+        return bot
+                .request()
+                .options();
     }
 
     /**
@@ -76,13 +90,13 @@ class API {
      * @return List of missing devices in case of fail or an empty list.
      * @throws HttpException Http Exception is thrown when status >= 400
      */
-    Devices sendMessage(OtrMessage msg, Object... ignoreMissing) throws HttpException {
-        Response response = getTarget().
-                path("messages").
-                queryParam("ignore_missing", ignoreMissing).
-                request(MediaType.APPLICATION_JSON).
-                header(AUTHORIZATION, getBearer()).
-                post(Entity.entity(msg, MediaType.APPLICATION_JSON));
+    @Override
+    public Devices sendMessage(OtrMessage msg, Object... ignoreMissing) throws HttpException {
+        Response response = messages
+                .queryParam("ignore_missing", ignoreMissing)
+                .request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, bearer())
+                .post(Entity.entity(msg, MediaType.APPLICATION_JSON));
 
         int statusCode = response.getStatus();
         if (statusCode == 412) {
@@ -97,13 +111,13 @@ class API {
         return response.readEntity(Devices.class);
     }
 
-    Devices sendPartialMessage(OtrMessage msg, String userId) throws HttpException {
-        Response response = getTarget().
-                path("messages").
-                queryParam("report_missing", userId).
-                request(MediaType.APPLICATION_JSON).
-                header(AUTHORIZATION, getBearer()).
-                post(Entity.entity(msg, MediaType.APPLICATION_JSON));
+    @Override
+    public Devices sendPartialMessage(OtrMessage msg, UUID userId) throws HttpException {
+        Response response = messages
+                .queryParam("report_missing", userId)
+                .request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, bearer())
+                .post(Entity.entity(msg, MediaType.APPLICATION_JSON));
 
         int statusCode = response.getStatus();
         if (statusCode == 412) {
@@ -118,43 +132,45 @@ class API {
         return response.readEntity(Devices.class);
     }
 
-    Collection<User> getUsers(Collection<String> ids) throws IOException {
-        return getTarget().
-                path(USERS).
-                queryParam("ids", String.join(",", ids)).
-                request(MediaType.APPLICATION_JSON).
-                header(AUTHORIZATION, getBearer()).
-                get(new GenericType<ArrayList<User>>() {
+    Collection<User> getUsers(Collection<UUID> ids) {
+        return users
+                .queryParam("ids", ids.toArray())
+                .request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, bearer())
+                .get(new GenericType<ArrayList<User>>() {
                 });
     }
 
-    Conversation getConversation() {
-        return getTarget().
-                path("conversation").
-                request().
-                header(AUTHORIZATION, getBearer()).
-                accept(MediaType.APPLICATION_JSON).
-                get(Conversation.class);
+    User getSelf() {
+        return bot
+                .path("self")
+                .request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, bearer())
+                .get(User.class);
     }
 
-    PreKeys getPreKeys(Missing missing) {
-        return getTarget().
-                path(USERS).
-                path(PREKEYS).
-                request(MediaType.APPLICATION_JSON).
-                header(AUTHORIZATION, getBearer()).
-                accept(MediaType.APPLICATION_JSON).
-                post(Entity.entity(missing, MediaType.APPLICATION_JSON), PreKeys.class);
+    Conversation getConversation() {
+        return conversation
+                .request()
+                .header(HttpHeaders.AUTHORIZATION, bearer())
+                .accept(MediaType.APPLICATION_JSON)
+                .get(Conversation.class);
+    }
+
+    public PreKeys getPreKeys(Missing missing) {
+        return prekeys
+                .request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, bearer())
+                .accept(MediaType.APPLICATION_JSON)
+                .post(Entity.entity(missing, MediaType.APPLICATION_JSON), PreKeys.class);
     }
 
     ArrayList<Integer> getAvailablePrekeys() {
-        return getTarget().
-                path(CLIENT).
-                path(PREKEYS).
-                request().
-                header(AUTHORIZATION, getBearer()).
-                accept(MediaType.APPLICATION_JSON).
-                get(new GenericType<ArrayList<Integer>>() {
+        return client
+                .request()
+                .header(HttpHeaders.AUTHORIZATION, bearer())
+                .accept(MediaType.APPLICATION_JSON)
+                .get(new GenericType<ArrayList<Integer>>() {
                 });
     }
 
@@ -162,13 +178,11 @@ class API {
         NewBotResponseModel model = new NewBotResponseModel();
         model.preKeys = preKeys;
 
-        Response res = getTarget().
-                path(CLIENT).
-                path(PREKEYS).
-                request(MediaType.APPLICATION_JSON).
-                header(AUTHORIZATION, getBearer()).
-                accept(MediaType.APPLICATION_JSON).
-                post(Entity.entity(model, MediaType.APPLICATION_JSON));
+        Response res = client
+                .request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, bearer())
+                .accept(MediaType.APPLICATION_JSON)
+                .post(Entity.entity(model, MediaType.APPLICATION_JSON));
 
         int statusCode = res.getStatus();
         if (statusCode >= 300) {
@@ -186,7 +200,6 @@ class API {
         String strMetadata = String.format("{\"public\": %s, \"retention\": \"%s\"}",
                 asset.isPublic(),
                 asset.getRetention());
-
         sb.append("--frontier\r\n");
         sb.append("Content-Type: application/json; charset=utf-8\r\n");
         sb.append("Content-Length: ")
@@ -213,10 +226,9 @@ class API {
         os.write(asset.getEncryptedData());
         os.write("\r\n--frontier--\r\n".getBytes("utf-8"));
 
-        Response response = getTarget()
-                .path(ASSETS)
+        Response response = assets
                 .request(MediaType.APPLICATION_JSON_TYPE)
-                .header(AUTHORIZATION, getBearer())
+                .header(HttpHeaders.AUTHORIZATION, bearer())
                 .post(Entity.entity(os.toByteArray(), "multipart/mixed; boundary=frontier"));
 
         if (response.getStatus() >= 300) {
@@ -227,12 +239,28 @@ class API {
         return response.readEntity(AssetKey.class);
     }
 
+    private MultiPart getMultiPart(IAsset asset) throws NoSuchAlgorithmException {
+        MetaData metaData = new MetaData();
+        metaData.retention = asset.getRetention();
+        metaData.scope = asset.isPublic();
+
+        BodyPart bodyPart1 = new BodyPart(metaData, MediaType.APPLICATION_JSON_TYPE);
+        BodyPart bodyPart2 = new BodyPart().entity(asset.getEncryptedData());
+
+        MultivaluedMap<String, String> headers = bodyPart2.getHeaders();
+        headers.add("Content-Type", asset.getMimeType());
+        headers.add("Content-MD5", Util.calcMd5(asset.getEncryptedData()));
+
+        return new MultiPart()
+                .bodyPart(bodyPart1)
+                .bodyPart(bodyPart2);
+    }
+
     byte[] downloadAsset(String assetKey, String assetToken) throws IOException {
-        Invocation.Builder req = getTarget()
-                .path(ASSETS)
+        Invocation.Builder req = assets
                 .path(assetKey)
                 .request()
-                .header(AUTHORIZATION, getBearer());
+                .header(HttpHeaders.AUTHORIZATION, bearer());
 
         if (assetToken != null)
             req.header("Asset-Token", assetToken);
@@ -247,8 +275,14 @@ class API {
         return response.readEntity(byte[].class);
     }
 
-    private String getBearer() {
+    private String bearer() {
         return String.format("Bearer %s", token);
     }
 
+    public static class MetaData {
+        @JsonProperty("public")
+        public boolean scope;
+        @JsonProperty
+        public String retention;
+    }
 }

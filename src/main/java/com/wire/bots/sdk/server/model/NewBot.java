@@ -21,18 +21,31 @@ package com.wire.bots.sdk.server.model;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import javax.validation.constraints.NotNull;
+import java.util.UUID;
+
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class NewBot {
     @JsonProperty
-    public String id;
+    @NotNull
+    public UUID id;
+
+    @NotNull
     @JsonProperty
     public String client;
+
+    @NotNull
     @JsonProperty
     public String token;
+
     @JsonProperty
     public String locale;
+
+    @NotNull
     @JsonProperty
     public User origin;
+
+    @NotNull
     @JsonProperty
     public Conversation conversation;
 }

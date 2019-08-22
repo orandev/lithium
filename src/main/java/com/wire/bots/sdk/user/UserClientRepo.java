@@ -1,41 +1,34 @@
 package com.wire.bots.sdk.user;
 
+import com.wire.bots.cryptobox.CryptoException;
 import com.wire.bots.sdk.ClientRepo;
 import com.wire.bots.sdk.WireClient;
 import com.wire.bots.sdk.crypto.Crypto;
 import com.wire.bots.sdk.factories.CryptoFactory;
 import com.wire.bots.sdk.factories.StorageFactory;
-import com.wire.bots.sdk.storage.Storage;
-import com.wire.bots.sdk.tools.Logger;
-import com.wire.cryptobox.CryptoException;
+import com.wire.bots.sdk.server.model.NewBot;
 
+import javax.ws.rs.client.Client;
 import java.io.IOException;
+import java.util.UUID;
 
 public class UserClientRepo extends ClientRepo {
-    public UserClientRepo(CryptoFactory cryptoFactory, StorageFactory storageFactory) {
-        super(cryptoFactory, storageFactory);
+    public UserClientRepo(Client httpClient, CryptoFactory cf, StorageFactory sf) {
+        super(httpClient, cf, sf);
     }
 
-    public WireClient getWireClient(String botId, String conv) throws CryptoException, IOException {
-        synchronized (clients) {
-            String key = String.format("%s-%s", botId, conv);
-            WireClient wireClient = clients.get(key);
-            if (wireClient == null || wireClient.isClosed()) {
-                try {
-                    Crypto crypto = cryptoFactory.create(botId);
-                    Storage storage = storageFactory.create(botId);
+    public WireClient getWireClient(UUID userId, UUID conv) throws CryptoException, IOException {
+        Crypto crypto = cf.create(userId);
+        NewBot state = sf.create(userId).getState();
+        API api = new API(httpClient, conv, state.token);
+        return new UserClient(state, conv, crypto, api);
+    }
 
-                    wireClient = new UserClient(crypto, storage, conv);
-                    clients.put(key, wireClient);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    Logger.error("GetWireClient. BotId: %s, conv: %s, status: %s",
-                            botId,
-                            conv,
-                            e.getMessage());
-                }
-            }
-            return wireClient;
-        }
+    /*
+    We dont want to purge the state when running in UserMode
+     */
+    @Override
+    public void purgeBot(UUID botId) {
+
     }
 }

@@ -18,6 +18,7 @@
 
 package com.wire.bots.sdk;
 
+import com.wire.bots.cryptobox.CryptoException;
 import com.wire.bots.sdk.assets.IAsset;
 import com.wire.bots.sdk.assets.IGeneric;
 import com.wire.bots.sdk.models.AssetKey;
@@ -30,6 +31,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.UUID;
 
 /**
  * Thread safe class for postings into this conversation
@@ -39,36 +41,40 @@ public interface WireClient extends Closeable {
      * Post text in the conversation
      *
      * @param txt Plain text to be posted into this conversation
+     * @return MessageId
      * @throws Exception
      */
-    void sendText(String txt) throws Exception;
-
-    /**
-     * Post text to specific user
-     *
-     * @param txt Plain text to be posted into this conversation
-     * @throws Exception
-     */
-    void sendDirectText(String txt, String userId) throws Exception;
+    UUID sendText(String txt) throws Exception;
 
     /**
      * Post text into the conversation
      *
      * @param txt     Plain text to be posted into this conversation
      * @param expires Time in milliseconds for this message to expire
+     * @return MessageId
      * @throws Exception
      */
-    void sendText(String txt, long expires) throws Exception;
+    UUID sendText(String txt, long expires) throws Exception;
 
     /**
-     * Post text into the conversation
+     * Send text containing a mention to a user that is a participant of this conv
      *
-     * @param txt       Plain text to be posted into this conversation
-     * @param expires   Time in milliseconds for this message to expire
-     * @param messageId Message ID
+     * @param txt     Plain text to be posted into this conversation
+     * @param mention UserId of another participant
+     * @return MessageId
      * @throws Exception
      */
-    void sendText(String txt, long expires, String messageId) throws Exception;
+    UUID sendText(String txt, UUID mention) throws Exception;
+
+    /**
+     * Post text to specific user
+     *
+     * @param txt    Plain text to be posted into this conversation
+     * @param userId UserId of participant that should read this msg
+     * @return MessageId
+     * @throws Exception
+     */
+    UUID sendDirectText(String txt, UUID userId) throws Exception;
 
     /**
      * Post url with preview into the conversation
@@ -76,28 +82,35 @@ public interface WireClient extends Closeable {
      * @param url   Original url
      * @param title Page title (see og:title)
      * @param image Page preview image (og:image). Image must be previously uploaded
+     * @return MessageId
      * @throws Exception
      */
-    void sendLinkPreview(String url, String title, IGeneric image) throws Exception;
+    UUID sendLinkPreview(String url, String title, IGeneric image) throws Exception;
+
+    UUID sendDirectLinkPreview(String url, String title, IGeneric image, UUID userId) throws Exception;
 
     /**
      * Post picture
      *
      * @param bytes    Row image to be sent
      * @param mimeType Mime type of the image.
+     * @return MessageId
      * @throws Exception
      */
-    void sendPicture(byte[] bytes, String mimeType) throws Exception;
+    UUID sendPicture(byte[] bytes, String mimeType) throws Exception;
 
-    void sendPicture(byte[] bytes, String mimeType, String userId) throws Exception;
+    UUID sendDirectPicture(byte[] bytes, String mimeType, UUID userId) throws Exception;
 
     /**
      * Post previously uploaded picture
      *
      * @param image Image that has been previously uploaded (@see uploadAsset)
+     * @return MessageId
      * @throws Exception
      */
-    void sendPicture(IGeneric image) throws Exception;
+    UUID sendPicture(IGeneric image) throws Exception;
+
+    UUID sendDirectPicture(IGeneric image, UUID userId) throws Exception;
 
     /**
      * Post audio file
@@ -106,9 +119,10 @@ public interface WireClient extends Closeable {
      * @param name     Name of this content - this will be showed as title
      * @param mimeType Mime Type of this content
      * @param duration Duration in milliseconds
+     * @return MessageId
      * @throws Exception
      */
-    void sendAudio(byte[] bytes, String name, String mimeType, long duration) throws Exception;
+    UUID sendAudio(byte[] bytes, String name, String mimeType, long duration) throws Exception;
 
     /**
      * Post video file
@@ -117,34 +131,42 @@ public interface WireClient extends Closeable {
      * @param name     Name of this content - this will be showed as title
      * @param mimeType Mime Type of this content
      * @param duration Duration in milliseconds
+     * @return MessageId
      * @throws Exception
      */
-    void sendVideo(byte[] bytes, String name, String mimeType, long duration, int h, int w) throws Exception;
+    UUID sendVideo(byte[] bytes, String name, String mimeType, long duration, int h, int w) throws Exception;
 
     /**
      * Post generic file up to 25MB as an attachment into this conversation.
      *
      * @param file File to be sent as attachment
      * @param mime Mime type of this attachment
+     * @return MessageId
      * @throws Exception
      */
-    void sendFile(File file, String mime) throws Exception;
+    UUID sendFile(File file, String mime) throws Exception;
+
+    UUID sendDirectFile(File file, String mime, UUID userId) throws Exception;
+
+    UUID sendDirectFile(IGeneric preview, IGeneric asset, UUID userId) throws Exception;
 
     /**
      * Sends ping into conversation
      *
+     * @return MessageId
      * @throws Exception
      */
-    void ping() throws Exception;
+    UUID ping() throws Exception;
 
     /**
      * Post Like for a message
      *
      * @param msgId Message ID
      * @param emoji Emoji - Should be '❤' for Like
+     * @return MessageId
      * @throws Exception
      */
-    void sendReaction(String msgId, String emoji) throws Exception;
+    UUID sendReaction(UUID msgId, String emoji) throws Exception;
 
     /**
      * Deletes previously posted message
@@ -152,7 +174,17 @@ public interface WireClient extends Closeable {
      * @param msgId Message ID
      * @throws Exception
      */
-    void deleteMessage(String msgId) throws Exception;
+    UUID deleteMessage(UUID msgId) throws Exception;
+
+    /**
+     * Post Like for a message
+     *
+     * @param replacingMessageId Message ID that is being edited
+     * @param text               New text
+     * @return MessageId
+     * @throws Exception
+     */
+    UUID editMessage(UUID replacingMessageId, String text) throws Exception;
 
     /**
      * This method downloads asset from the Backend.
@@ -169,12 +201,24 @@ public interface WireClient extends Closeable {
     /**
      * @return Bot ID as UUID
      */
-    String getId();
+    UUID getId();
+
+    /**
+     * Fetch the bot's own user profile information. A bot's profile has the following attributes:
+     * <p>
+     * id (String): The bot's user ID.
+     * name (String): The bot's name.
+     * accent_id (Number): The bot's accent colour.
+     * assets (Array): The bot's public profile assets (e.g. images).
+     *
+     * @return
+     */
+    User getSelf();
 
     /**
      * @return Conversation ID as UUID
      */
-    String getConversationId();
+    UUID getConversationId();
 
     /**
      * @return Device ID as returned by the Wire Backend
@@ -188,7 +232,7 @@ public interface WireClient extends Closeable {
      * @return Collection of user profiles (name, accent colour,...)
      * @throws IOException
      */
-    Collection<User> getUsers(Collection<String> userIds) throws IOException;
+    Collection<User> getUsers(Collection<UUID> userIds) throws IOException;
 
     /**
      * Fetch users' profiles from the Backend
@@ -197,7 +241,7 @@ public interface WireClient extends Closeable {
      * @return User profile (name, accent colour,...)
      * @throws IOException
      */
-    User getUser(String userId) throws IOException;
+    User getUser(UUID userId) throws IOException;
 
     /**
      * Fetch conversation details from the Backend
@@ -215,7 +259,7 @@ public interface WireClient extends Closeable {
      * @param user User ID as UUID
      * @throws IOException
      */
-    void acceptConnection(String user) throws Exception;
+    void acceptConnection(UUID user) throws Exception;
 
     /**
      * Decrypt cipher either using existing session or it creates new session from this cipher and decrypts
@@ -226,7 +270,7 @@ public interface WireClient extends Closeable {
      * @return Base64 encoded decrypted text
      * @throws Exception
      */
-    String decrypt(String userId, String clientId, String cypher) throws Exception;
+    String decrypt(UUID userId, String clientId, String cypher) throws CryptoException;
 
     /**
      * Invoked by the sdk. Called once when the conversation is created
@@ -234,7 +278,7 @@ public interface WireClient extends Closeable {
      * @return Last prekey
      * @throws Exception
      */
-    PreKey newLastPreKey() throws Exception;
+    PreKey newLastPreKey() throws CryptoException;
 
     /**
      * Invoked by the sdk. Called once when the conversation is created and then occasionally when number of available
@@ -245,7 +289,7 @@ public interface WireClient extends Closeable {
      * @return List of prekeys
      * @throws Exception
      */
-    ArrayList<PreKey> newPreKeys(int from, int count) throws Exception;
+    ArrayList<PreKey> newPreKeys(int from, int count) throws CryptoException;
 
     /**
      * Uploads previously generated prekeys to BE

@@ -19,30 +19,49 @@
 package com.wire.bots.sdk;
 
 import com.codahale.metrics.Gauge;
-import com.codahale.metrics.health.HealthCheck;
-import com.wire.bots.sdk.crypto.Crypto;
+import com.codahale.metrics.jmx.JmxReporter;
+import com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider;
+import com.wire.bots.sdk.crypto.CryptoDatabase;
 import com.wire.bots.sdk.crypto.CryptoFile;
+import com.wire.bots.sdk.crypto.storage.PgStorage;
+import com.wire.bots.sdk.crypto.storage.RedisStorage;
 import com.wire.bots.sdk.factories.CryptoFactory;
 import com.wire.bots.sdk.factories.StorageFactory;
+import com.wire.bots.sdk.healthchecks.Alice2Bob;
+import com.wire.bots.sdk.healthchecks.CryptoHealthCheck;
+import com.wire.bots.sdk.healthchecks.Outbound;
+import com.wire.bots.sdk.healthchecks.StorageHealthCheck;
 import com.wire.bots.sdk.server.resources.BotsResource;
+import com.wire.bots.sdk.server.resources.EmptyStatusResource;
 import com.wire.bots.sdk.server.resources.MessageResource;
 import com.wire.bots.sdk.server.resources.StatusResource;
 import com.wire.bots.sdk.server.tasks.AvailablePrekeysTask;
-import com.wire.bots.sdk.server.tasks.BroadcastAllTask;
 import com.wire.bots.sdk.server.tasks.ConversationTask;
-import com.wire.bots.sdk.storage.FileStorage;
+import com.wire.bots.sdk.state.FileState;
+import com.wire.bots.sdk.state.PostgresState;
+import com.wire.bots.sdk.state.RedisState;
 import com.wire.bots.sdk.tools.AuthValidator;
 import com.wire.bots.sdk.tools.Logger;
 import com.wire.bots.sdk.tools.Util;
 import com.wire.bots.sdk.user.Endpoint;
 import com.wire.bots.sdk.user.UserClientRepo;
 import com.wire.bots.sdk.user.UserMessageResource;
+import com.wire.bots.sdk.user.model.Access;
 import io.dropwizard.Application;
+import io.dropwizard.client.JerseyClientBuilder;
+import io.dropwizard.client.JerseyClientConfiguration;
+import io.dropwizard.configuration.EnvironmentVariableSubstitutor;
+import io.dropwizard.configuration.SubstitutingSourceProvider;
 import io.dropwizard.servlets.tasks.Task;
 import io.dropwizard.setup.Bootstrap;
 import io.dropwizard.setup.Environment;
+import io.federecio.dropwizard.swagger.SwaggerBundle;
+import io.federecio.dropwizard.swagger.SwaggerBundleConfiguration;
+import org.glassfish.jersey.media.multipart.MultiPartFeature;
 
-import java.util.Random;
+import javax.ws.rs.client.Client;
+import java.net.URI;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Entry point for your Application
@@ -53,6 +72,8 @@ public abstract class Server<Config extends Configuration> extends Application<C
     protected ClientRepo repo;
     protected Config config;
     protected Environment environment;
+    protected Client client;
+    protected MessageHandlerBase messageHandler;
 
     /**
      * This method is called once by the sdk in order to create the main message handler
@@ -64,6 +85,17 @@ public abstract class Server<Config extends Configuration> extends Application<C
     protected abstract MessageHandlerBase createHandler(Config config, Environment env) throws Exception;
 
     /**
+     * Override this method to put your custom initialization
+     * NOTE: ClientRepo is not yet set at this stage. messageHandler is also not set
+     *
+     * @param config Configuration object (yaml)
+     * @param env    Environment object
+     */
+    protected void initialize(Config config, Environment env) throws Exception {
+
+    }
+
+    /**
      * Override this method in case you need to add custom Resource and/or Task
      * {@link #addResource(Object, io.dropwizard.setup.Environment)}
      * and {@link #addTask(io.dropwizard.servlets.tasks.Task, io.dropwizard.setup.Environment)}
@@ -71,11 +103,24 @@ public abstract class Server<Config extends Configuration> extends Application<C
      * @param config Configuration object (yaml)
      * @param env    Environment object
      */
-    protected void onRun(Config config, Environment env) {
+    protected void onRun(Config config, Environment env) throws Exception {
+
     }
 
     @Override
-    public void initialize(Bootstrap<Config> configBootstrap) {
+    public void initialize(Bootstrap<Config> bootstrap) {
+        bootstrap.setConfigurationSourceProvider(
+                new SubstitutingSourceProvider(bootstrap.getConfigurationSourceProvider(),
+                        new EnvironmentVariableSubstitutor(false)
+                )
+        );
+
+        bootstrap.addBundle(new SwaggerBundle<Config>() {
+            @Override
+            protected SwaggerBundleConfiguration getSwaggerBundleConfiguration(Config configuration) {
+                return configuration.getSwagger();
+            }
+        });
     }
 
     @Override
@@ -83,76 +128,133 @@ public abstract class Server<Config extends Configuration> extends Application<C
         this.config = config;
         this.environment = env;
 
+        JerseyClientConfiguration jerseyCfg = config.getJerseyClientConfiguration();
+        jerseyCfg.setChunkedEncodingEnabled(false);
+        jerseyCfg.setGzipEnabled(false);
+        jerseyCfg.setGzipEnabledForRequests(false);
+
+        client = new JerseyClientBuilder(environment)
+                .using(jerseyCfg)
+                .withProvider(MultiPartFeature.class)
+                .withProvider(JacksonJsonProvider.class)
+                .build(getName());
+
         initialize(config, env);
 
-        initTelemetry(config, env);
+        messageHandler = createHandler(config, env);
 
-        if (!runInUserMode(config, env)) {
-            runInBotMode(config, env);
+        if (config.userMode) {
+            runInUserMode(messageHandler);
         }
+
+        repo = runInBotMode(env, messageHandler);
+
+        initTelemetry(env);
 
         onRun(config, env);
     }
 
-    protected void initialize(Config config, Environment env) throws Exception {
-
+    public StorageFactory getStorageFactory() {
+        if (config.db.driver == null) {
+            return botId -> new RedisState(botId, config.db);
+        }
+        if (config.db.driver.equals("fs")) {
+            return botId -> new FileState(botId, config.db);
+        }
+        if (config.db.driver.equals("postgresql")) {
+            return botId -> new PostgresState(botId, config.db);
+        }
+        return botId -> new RedisState(botId, config.db);
     }
 
-    protected StorageFactory getStorageFactory(Config config) {
-        return botId -> new FileStorage(config.data, botId);
+    public CryptoFactory getCryptoFactory() {
+        if (config.db.driver == null) {
+            return redisCryptoFactory();
+        }
+        if (config.db.driver.equals("fs")) {
+            return fileCryptoFactory();
+        }
+        if (config.db.driver.equals("postgresql")) {
+            return postgresCryptoFactory();
+        }
+        return redisCryptoFactory();
     }
 
-    protected CryptoFactory getCryptoFactory(Config config) {
-        return (botId) -> new CryptoFile(config.data, botId);
+    private CryptoFactory fileCryptoFactory() {
+        return (botId) -> new CryptoFile(botId, config.db);
     }
 
-    private void runInBotMode(Config config, Environment env) throws Exception {
-        StorageFactory storageFactory = getStorageFactory(config);
-        CryptoFactory cryptoFactory = getCryptoFactory(config);
+    private CryptoFactory postgresCryptoFactory() {
+        return (botId) -> {
+            PgStorage storage = new PgStorage(config.db.user,
+                    config.db.password,
+                    config.db.database,
+                    config.db.host,
+                    config.db.port);
+            return new CryptoDatabase(botId, storage);
+        };
+    }
 
-        repo = new ClientRepo(cryptoFactory, storageFactory);
+    private CryptoFactory redisCryptoFactory() {
+        return (botId) -> {
+            RedisStorage storage = new RedisStorage(config.db.host,
+                    config.db.port,
+                    config.db.password);
+            return new CryptoDatabase(botId, storage);
+        };
+    }
 
-        MessageHandlerBase handler = createHandler(config, env);
+    private ClientRepo runInBotMode(Environment env, MessageHandlerBase handler) {
+        StorageFactory storageFactory = getStorageFactory();
+        CryptoFactory cryptoFactory = getCryptoFactory();
+
+        ClientRepo repo = new ClientRepo(client, cryptoFactory, storageFactory);
 
         addResource(new StatusResource(), env);
+        addResource(new EmptyStatusResource(), env);
 
         botResource(config, env, handler);
-        messageResource(config, env, handler);
+        messageResource(config, env, handler, repo);
 
-        addTask(new BroadcastAllTask(repo), env);
         addTask(new ConversationTask(repo), env);
         addTask(new AvailablePrekeysTask(repo), env);
+
+        return repo;
     }
 
-    private boolean runInUserMode(Config config, Environment env) throws Exception {
-        String email = System.getProperty("email");
-        String password = System.getProperty("password");
+    private void runInUserMode(MessageHandlerBase handler) throws Exception {
+        Logger.info("Starting in User Mode");
 
-        if (email != null && password != null) {
-            StorageFactory storageFactory = getStorageFactory(config);
-            CryptoFactory cryptoFactory = getCryptoFactory(config);
+        String email = Configuration.propOrEnv("email", true);
+        String password = Configuration.propOrEnv("password", true);
 
-            UserClientRepo repo = new UserClientRepo(cryptoFactory, storageFactory);
+        StorageFactory storageFactory = getStorageFactory();
+        CryptoFactory cryptoFactory = getCryptoFactory();
 
-            Endpoint ep = new Endpoint(config.data);
-            String userId = ep.signIn(email, password, true);
-            Logger.info(String.format("Logged in as User: %s userId: %s", email, userId));
+        UserClientRepo clientRepo = new UserClientRepo(client, cryptoFactory, storageFactory);
 
-            MessageHandlerBase handler = createHandler(config, env);
-            ep.connectWebSocket(new UserMessageResource(handler, repo));
-            return true;
-        }
-        return false;
+        Endpoint ep = new Endpoint(client, cryptoFactory, storageFactory);
+        Access access = ep.signIn(email, password, true);
+        Logger.info("Logged in as: %s userId: %s:%s token: %s",
+                email,
+                access.getUserId(),
+                access.getClientId(),
+                access.getToken());
+
+        UserMessageResource userMessageResource = new UserMessageResource(access.getUserId(), handler, clientRepo);
+        String wss = Util.getWss(access.getToken(), access.getClientId());
+
+        ep.connectWebSocket(userMessageResource, new URI(wss));
     }
 
-    protected void messageResource(Config config, Environment env, MessageHandlerBase handler) {
+    protected void messageResource(Config config, Environment env, MessageHandlerBase handler, ClientRepo repo) {
         AuthValidator validator = new AuthValidator(config.getAuth());
         addResource(new MessageResource(handler, validator, repo), env);
     }
 
     protected void botResource(Config config, Environment env, MessageHandlerBase handler) {
-        StorageFactory storageFactory = getStorageFactory(config);
-        CryptoFactory cryptoFactory = getCryptoFactory(config);
+        StorageFactory storageFactory = getStorageFactory();
+        CryptoFactory cryptoFactory = getCryptoFactory();
         AuthValidator authValidator = new AuthValidator(config.getAuth());
 
         addResource(new BotsResource(handler, storageFactory, cryptoFactory, authValidator), env);
@@ -166,40 +268,38 @@ public abstract class Server<Config extends Configuration> extends Application<C
         env.jersey().register(component);
     }
 
-    private void initTelemetry(final Config conf, Environment env) {
-        env.healthChecks().register("ok", new HealthCheck() {
-            @Override
-            protected Result check() throws Exception {
-                return Result.healthy();
-            }
-        });
+    private void initTelemetry(Environment env) {
+        final CryptoFactory cryptoFactory = getCryptoFactory();
+        final StorageFactory storageFactory = getStorageFactory();
 
-        //todo: implement crypto.status()
-        env.healthChecks().register("Crypto", new HealthCheck() {
-            @Override
-            protected Result check() throws Exception {
-                try (Crypto crypto = getCryptoFactory(conf).create("test")) {
-                    return Result.healthy();
-                }
-            }
-        });
-
-        env.healthChecks().register("JCEPolicy", new HealthCheck() {
-            @Override
-            protected Result check() throws Exception {
-                byte[] otrKey = new byte[32];
-                byte[] iv = new byte[16];
-                byte[] data = new byte[1024];
-
-                Random random = new Random();
-                random.nextBytes(otrKey);
-                random.nextBytes(iv);
-                random.nextBytes(data);
-                Util.encrypt(otrKey, data, iv);
-                return Result.healthy();
-            }
-        });
+        env.healthChecks().register("Storage", new StorageHealthCheck(storageFactory));
+        env.healthChecks().register("Crypto", new CryptoHealthCheck(cryptoFactory));
+        env.healthChecks().register("Alice2Bob", new Alice2Bob(cryptoFactory));
+        env.healthChecks().register("Outbound", new Outbound(client));
 
         env.metrics().register("logger.errors", (Gauge<Integer>) Logger::getErrorCount);
+        env.metrics().register("logger.warnings", (Gauge<Integer>) Logger::getWarningCount);
+
+        JmxReporter jmxReporter = JmxReporter.forRegistry(env.metrics())
+                .convertRatesTo(TimeUnit.SECONDS)
+                .convertDurationsTo(TimeUnit.MILLISECONDS)
+                .build();
+        jmxReporter.start();
+    }
+
+    public ClientRepo getRepo() {
+        return repo;
+    }
+
+    public Config getConfig() {
+        return config;
+    }
+
+    public Environment getEnvironment() {
+        return environment;
+    }
+
+    public Client getClient() {
+        return client;
     }
 }

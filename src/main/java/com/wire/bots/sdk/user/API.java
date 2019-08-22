@@ -20,6 +20,7 @@ package com.wire.bots.sdk.user;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.wire.bots.sdk.Backend;
 import com.wire.bots.sdk.assets.IAsset;
 import com.wire.bots.sdk.exceptions.HttpException;
 import com.wire.bots.sdk.models.AssetKey;
@@ -31,106 +32,116 @@ import com.wire.bots.sdk.server.model.User;
 import com.wire.bots.sdk.tools.Logger;
 import com.wire.bots.sdk.tools.Util;
 import com.wire.bots.sdk.user.model.Connection;
+import org.glassfish.jersey.logging.LoggingFeature;
 
+import javax.ws.rs.client.Client;
 import javax.ws.rs.client.Entity;
 import javax.ws.rs.client.Invocation;
-import javax.ws.rs.core.GenericType;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
+import javax.ws.rs.client.WebTarget;
+import javax.ws.rs.core.*;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
+import java.util.*;
+import java.util.logging.Level;
 
-public class API extends LoginClient {
+public class API extends LoginClient implements Backend {
+    private final WebTarget conversationsPath;
+    private final WebTarget usersPath;
+    private final WebTarget assetsPath;
+    private final WebTarget teamsPath;
+    private final WebTarget connectionsPath;
+    private final WebTarget selfPath;
+
     private final String token;
     private final String convId;
 
-    public API(String convId, String token) {
-        this.convId = convId;
+    public API(Client client, UUID convId, String token) {
+        super(client);
+        this.convId = convId != null ? convId.toString() : null;
         this.token = token;
+
+        String host = host();
+        WebTarget target = client
+                .target(host);
+
+        conversationsPath = target.path("conversations");
+        usersPath = target.path("users");
+        assetsPath = target.path("assets/v3");
+        teamsPath = target.path("teams");
+        connectionsPath = target.path("connections");
+        selfPath = target.path("self");
+
+        Feature feature = new LoggingFeature(Logger.getLOGGER(), Level.FINE, null, null);
+        assetsPath.register(feature);
+        //usersPath.register(feature);
     }
 
-    static String renewAccessToken(String cookie, String token) throws HttpException {
-        Response response = accessPath.
-                request(MediaType.APPLICATION_JSON).
-                header("Authorization", "Bearer " + token).
-                header("Cookie", cookie).
-                post(Entity.entity(new Connection(), MediaType.APPLICATION_JSON));
-
-
-        if (response.getStatus() >= 400) {
-            throw new HttpException(response.readEntity(String.class), response.getStatus());
-        }
-
-        return response.readEntity(com.wire.bots.sdk.user.model.User.class).getToken();
-    }
-
-    public static Conversation createConversation(String name, String token) throws HttpException {
-        Response response = conversationsPath.
-                request().
-                header("Authorization", "Bearer " + token).
-                accept(MediaType.APPLICATION_JSON).
-                post(Entity.entity("{\"users\":[], \"name\":\"" + name + "\"}", MediaType.APPLICATION_JSON));
-
-        if (response.getStatus() >= 400) {
-            throw new HttpException(response.readEntity(String.class), response.getStatus());
-        }
-
-        _Conv conv = response.readEntity(_Conv.class);
-
-        Conversation ret = new Conversation();
-        ret.name = conv.name;
-        ret.id = conv.id;
-        ret.members = conv.members.others;
-        return ret;
-    }
-
-    Devices sendMessage(OtrMessage msg, boolean ignoreMissing) throws HttpException {
+    @Override
+    public Devices sendMessage(OtrMessage msg, Object... ignoreMissing) throws HttpException {
         Response response = conversationsPath.
                 path(convId).
                 path("otr/messages").
                 queryParam("ignore_missing", ignoreMissing).
                 request(MediaType.APPLICATION_JSON).
-                header("Authorization", "Bearer " + token).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
                 post(Entity.entity(msg, MediaType.APPLICATION_JSON));
 
         int statusCode = response.getStatus();
         if (statusCode == 412) {
-            //Logger.info(response.readEntity(String.class));
             return response.readEntity(Devices.class);
         }
 
         if (statusCode >= 400)
-            throw new HttpException(response.readEntity(String.class), response.getStatus());
+            throw new HttpException(response.getStatusInfo().getReasonPhrase(), response.getStatus());
 
         return new Devices();
     }
 
-    PreKeys getPreKeys(Missing missing) throws IOException {
+    @Override
+    public Devices sendPartialMessage(OtrMessage msg, UUID userId) throws HttpException {
+        Response response = conversationsPath.
+                path(convId).
+                path("otr/messages").
+                queryParam("report_missing", userId).
+                request(MediaType.APPLICATION_JSON).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
+                post(Entity.entity(msg, MediaType.APPLICATION_JSON));
+
+        int statusCode = response.getStatus();
+        if (statusCode == 412) {
+            return response.readEntity(Devices.class);
+        }
+
+        if (statusCode >= 400)
+            throw new HttpException(response.getStatusInfo().getReasonPhrase(), response.getStatus());
+
+        return new Devices();
+    }
+
+    @Override
+    public PreKeys getPreKeys(Missing missing) {
         if (missing.isEmpty())
             return new PreKeys();
 
         return usersPath.path("prekeys").
                 request(MediaType.APPLICATION_JSON).
-                header("Authorization", "Bearer " + token).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
                 accept(MediaType.APPLICATION_JSON).
                 post(Entity.entity(missing, MediaType.APPLICATION_JSON), PreKeys.class);
     }
 
-    byte[] downloadAsset(String assetKey, String assetToken) throws HttpException {
+    public byte[] downloadAsset(String assetKey, String assetToken) throws HttpException {
         Invocation.Builder req = assetsPath
                 .path(assetKey)
-                .request()
-                .header("Authorization", "Bearer " + token);
+                .queryParam("access_token", token)
+                .request();
 
         if (assetToken != null)
             req.header("Asset-Token", assetToken);
 
         Response response = req.get();
 
-        if (response.getStatus() >= 300) {
+        if (response.getStatus() >= 400) {
             String log = String.format("%s. AssetId: %s", response.readEntity(String.class), assetKey);
             throw new HttpException(log, response.getStatus());
         }
@@ -138,14 +149,14 @@ public class API extends LoginClient {
         return response.readEntity(byte[].class);
     }
 
-    void acceptConnection(String user) throws HttpException {
+    void acceptConnection(UUID user) throws HttpException {
         Connection connection = new Connection();
         connection.setStatus("accepted");
 
         Response response = connectionsPath.
-                path(user).
+                path(user.toString()).
                 request(MediaType.APPLICATION_JSON).
-                header("Authorization", "Bearer " + token).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
                 put(Entity.entity(connection, MediaType.APPLICATION_JSON));
 
         if (response.getStatus() >= 400) {
@@ -153,7 +164,7 @@ public class API extends LoginClient {
         }
     }
 
-    AssetKey uploadAsset(IAsset asset) throws Exception {
+    public AssetKey uploadAsset(IAsset asset) throws Exception {
         StringBuilder sb = new StringBuilder();
 
         // Part 1
@@ -188,7 +199,7 @@ public class API extends LoginClient {
 
         Response response = assetsPath
                 .request(MediaType.APPLICATION_JSON_TYPE)
-                .header("Authorization", "Bearer " + token)
+                .header(HttpHeaders.AUTHORIZATION, bearer(token))
                 .post(Entity.entity(os.toByteArray(), "multipart/mixed; boundary=frontier"));
 
         if (response.getStatus() >= 300) {
@@ -202,8 +213,7 @@ public class API extends LoginClient {
         Response response = conversationsPath.
                 path(convId).
                 request().
-                header("Authorization", "Bearer " + token).
-                accept(MediaType.APPLICATION_JSON).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
                 get();
 
         if (response.getStatus() >= 300) {
@@ -220,14 +230,13 @@ public class API extends LoginClient {
         return ret;
     }
 
-    public boolean deleteConversation(String teamId) throws HttpException {
+    public boolean deleteConversation(UUID teamId) throws HttpException {
         Response response = teamsPath.
-                path(teamId).
+                path(teamId.toString()).
                 path("conversations").
                 path(convId).
                 request().
-                header("Authorization", "Bearer " + token).
-                accept(MediaType.APPLICATION_JSON).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
                 delete();
 
         if (response.getStatus() >= 400) {
@@ -237,7 +246,7 @@ public class API extends LoginClient {
         return response.getStatus() == 200;
     }
 
-    public User addService(String serviceId, String providerId) throws IOException {
+    public User addService(UUID serviceId, UUID providerId) throws IOException {
         _Service service = new _Service();
         service.service = serviceId;
         service.provider = providerId;
@@ -246,8 +255,7 @@ public class API extends LoginClient {
                 path(convId).
                 path("bots").
                 request().
-                header("Authorization", "Bearer " + token).
-                accept(MediaType.APPLICATION_JSON).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
                 post(Entity.entity(service, MediaType.APPLICATION_JSON));
 
         if (response.getStatus() >= 300) {
@@ -258,23 +266,108 @@ public class API extends LoginClient {
         User user = response.readEntity(User.class);
         user.service = new Service();
         user.service.id = serviceId;
-        user.service.provider = providerId;
+        user.service.providerId = providerId;
         return user;
     }
 
-    Collection<com.wire.bots.sdk.server.model.User> getUsers(Collection<String> ids) throws IOException {
-        return usersPath.
-                queryParam("ids", ids).
+    public User addParticipants(UUID... userIds) throws IOException {
+        _NewConv newConv = new _NewConv();
+        newConv.users = Arrays.asList(userIds);
+
+        Response response = conversationsPath.
+                path(convId).
+                path("members").
+                request().
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
+                post(Entity.entity(newConv, MediaType.APPLICATION_JSON));
+
+        if (response.getStatus() >= 300) {
+            Logger.warning(response.readEntity(String.class));
+            throw new IOException(response.getStatusInfo().getReasonPhrase());
+        }
+
+        return response.readEntity(User.class);
+    }
+
+    public Conversation createConversation(String name, UUID teamId, List<UUID> users, String token)
+            throws HttpException {
+        _NewConv newConv = new _NewConv();
+        newConv.name = name;
+        newConv.users = users;
+        if (teamId != null) {
+            newConv.team = new _TeamInfo();
+            newConv.team.teamId = teamId;
+        }
+
+        Response response = conversationsPath.
                 request(MediaType.APPLICATION_JSON).
-                header("Authorization", "Bearer " + token).
-                get(new GenericType<ArrayList<com.wire.bots.sdk.server.model.User>>() {
-                });
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
+                post(Entity.entity(newConv, MediaType.APPLICATION_JSON));
+
+        if (response.getStatus() >= 400) {
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
+        }
+
+        _Conv conv = response.readEntity(_Conv.class);
+
+        Conversation ret = new Conversation();
+        ret.name = conv.name;
+        ret.id = conv.id;
+        ret.members = conv.members.others;
+        return ret;
+    }
+
+    public Conversation createOne2One(UUID teamId, UUID serviceId, UUID providerId, String token)
+            throws HttpException {
+        _Service service = new _Service();
+        service.service = serviceId;
+        service.provider = providerId;
+
+        _NewConv newConv = new _NewConv();
+        newConv.service = service;
+
+        if (teamId != null) {
+            newConv.team = new _TeamInfo();
+            newConv.team.teamId = teamId;
+        }
+
+        Response response = conversationsPath
+                .path("one2one")
+                .request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                .post(Entity.entity(newConv, MediaType.APPLICATION_JSON));
+
+        if (response.getStatus() >= 400) {
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
+        }
+
+        _Conv conv = response.readEntity(_Conv.class);
+
+        Conversation ret = new Conversation();
+        ret.name = conv.name;
+        ret.id = conv.id;
+        ret.members = conv.members.others;
+        return ret;
+    }
+
+    public void leaveConversation(UUID user) throws HttpException {
+        Response response = conversationsPath
+                .path(convId)
+                .path("members")
+                .path(user.toString())
+                .request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                .delete();
+
+        if (response.getStatus() >= 400) {
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
+        }
     }
 
     void uploadPreKeys(ArrayList<PreKey> preKeys) {
         usersPath.path("prekeys").
                 request(MediaType.APPLICATION_JSON).
-                header("Authorization", "Bearer " + token).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
                 accept(MediaType.APPLICATION_JSON).
                 post(Entity.entity(preKeys, MediaType.APPLICATION_JSON));
     }
@@ -284,15 +377,45 @@ public class API extends LoginClient {
                 path(clientId).
                 path("prekeys").
                 request().
-                header("Authorization", "Bearer " + token).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
                 accept(MediaType.APPLICATION_JSON).
                 get(new GenericType<ArrayList<Integer>>() {
                 });
     }
 
-    public String getTeam() {
-        _Teams res = teamsPath.request(MediaType.APPLICATION_JSON)
-                .header("Authorization", "Bearer " + token)
+    public Collection<User> getUsers(Collection<UUID> ids) {
+        return usersPath.
+                queryParam("ids", ids.toArray()).
+                request(MediaType.APPLICATION_JSON).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
+                get(new GenericType<Collection<User>>() {
+                });
+    }
+
+    public User getUser(UUID userId) {
+        ArrayList<User> users = usersPath.
+                queryParam("ids", userId).
+                request(MediaType.APPLICATION_JSON).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
+                get(new GenericType<ArrayList<User>>() {
+                });
+        if (users.isEmpty())
+            return null;
+
+        return users.get(0);
+    }
+
+    public User getSelf() {
+        return selfPath.
+                request(MediaType.APPLICATION_JSON).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
+                get(User.class);
+    }
+
+    public UUID getTeam() {
+        _Teams res = teamsPath
+                .request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, bearer(token))
                 .accept(MediaType.APPLICATION_JSON)
                 .get(_Teams.class);
         if (res.teams.isEmpty())
@@ -304,7 +427,7 @@ public class API extends LoginClient {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class _Conv {
         @JsonProperty
-        public String id;
+        public UUID id;
 
         @JsonProperty
         public String name;
@@ -321,14 +444,14 @@ public class API extends LoginClient {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     static class _Service {
-        public String service;
-        public String provider;
+        public UUID service;
+        public UUID provider;
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     static class _Team {
         @JsonProperty
-        public String id;
+        public UUID id;
         @JsonProperty
         public String name;
     }
@@ -337,5 +460,27 @@ public class API extends LoginClient {
     static class _Teams {
         @JsonProperty
         public ArrayList<_Team> teams;
+    }
+
+    static class _NewConv {
+        @JsonProperty
+        public String name;
+
+        @JsonProperty
+        public _TeamInfo team;
+
+        @JsonProperty
+        public List<UUID> users;
+
+        @JsonProperty
+        public _Service service;
+    }
+
+    static class _TeamInfo {
+        @JsonProperty("teamid")
+        public UUID teamId;
+
+        @JsonProperty
+        public boolean managed;
     }
 }

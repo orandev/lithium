@@ -18,6 +18,9 @@
 
 package com.wire.bots.sdk.tools;
 
+import com.wire.bots.sdk.Configuration;
+import com.wire.bots.sdk.exceptions.AuthException;
+
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.SecretKey;
@@ -35,9 +38,12 @@ import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.KeySpec;
 import java.util.Base64;
+import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class Util {
-
+    private static Pattern pattern = Pattern.compile("(?<=@)([a-zA-Z0-9\\_]{3,})");
     private static final String HMAC_SHA_1 = "HmacSHA1";
 
     public static byte[] encrypt(byte[] key, byte[] dataToSend, byte[] iv) throws Exception {
@@ -65,7 +71,8 @@ public class Util {
         return cipher.doFinal(bytes);
     }
 
-    public static SecretKey genKey(char[] password, byte[] salt) throws NoSuchAlgorithmException, InvalidKeySpecException {
+    public static SecretKey genKey(char[] password, byte[] salt)
+            throws NoSuchAlgorithmException, InvalidKeySpecException {
         SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
         KeySpec spec = new PBEKeySpec(password, salt, 65536, 256);
         SecretKey tmp = factory.generateSecret(spec);
@@ -92,16 +99,23 @@ public class Util {
         }
     }
 
-
-    public static String calcMd5(byte[] encryptedData) throws NoSuchAlgorithmException {
+    public static String calcMd5(byte[] bytes) throws NoSuchAlgorithmException {
         MessageDigest md = MessageDigest.getInstance("MD5");
-        md.update(encryptedData, 0, encryptedData.length);
+        md.update(bytes, 0, bytes.length);
         byte[] hash = md.digest();
         byte[] byteArray = Base64.getEncoder().encode(hash);
         return new String(byteArray);
     }
 
-    public static String getHmacSHA1(String payload, String secret) throws NoSuchAlgorithmException, InvalidKeyException {
+    public static String digest(MessageDigest md, byte[] bytes) {
+        md.update(bytes, 0, bytes.length);
+        byte[] hash = md.digest();
+        byte[] byteArray = Base64.getEncoder().encode(hash);
+        return new String(byteArray);
+    }
+
+    public static String getHmacSHA1(String payload, String secret)
+            throws NoSuchAlgorithmException, InvalidKeyException {
         Mac hmac = Mac.getInstance(HMAC_SHA_1);
         hmac.init(new SecretKeySpec(secret.getBytes(Charset.forName("UTF-8")), HMAC_SHA_1));
         byte[] bytes = hmac.doFinal(payload.getBytes(Charset.forName("UTF-8")));
@@ -109,21 +123,27 @@ public class Util {
     }
 
     public static byte[] toByteArray(InputStream input) throws IOException {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        int n;
-        byte[] buffer = new byte[1024 * 4];
-        while (-1 != (n = input.read(buffer))) {
-            output.write(buffer, 0, n);
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            int n;
+            byte[] buffer = new byte[1024 * 4];
+            while (-1 != (n = input.read(buffer))) {
+                output.write(buffer, 0, n);
+            }
+            return output.toByteArray();
         }
-        return output.toByteArray();
     }
 
-    public static boolean compareTokens(String token1, String token2) {
-        if (token1 == null || token2 == null)
+    public static boolean compareAuthorizations(String auth1, String auth2) {
+        if (auth1 == null || auth2 == null)
             return false;
-        String t1 = token1.replace("Bearer", "").trim();
-        String t2 = token2.replace("Bearer", "").trim();
-        return t1.equals(t2);
+        String token1 = extractToken(auth1);
+        String token2 = extractToken(auth2);
+        return token1.equals(token2);
+    }
+
+    private static String extractToken(String auth) {
+        String[] split = auth.split(" ");
+        return split.length == 1 ? split[0] : split[1];
     }
 
     public static String extractMimeType(byte[] imageData) throws IOException {
@@ -133,13 +153,55 @@ public class Util {
         }
     }
 
-    public static String getDomain(){
-        String env = System.getProperty("env", "prod");
+    public static String getDomain() {
+        String env = Configuration.propOrEnv("env", "prod");
         return env.equals("prod") ? "wire.com" : "zinfra.io";
     }
 
+    public static String getWss(String token, String clientId) {
+        String env = Configuration.propOrEnv("env", "prod");
+        return String.format("wss://%s-nginz-ssl.%s/await?access_token=%s&client=%s",
+                env,
+                getDomain(),
+                token,
+                clientId);
+    }
+
     public static String getHost() {
-        String env = System.getProperty("env", "prod");
+        String env = Configuration.propOrEnv("env", "prod");
         return String.format("https://%s-nginz-https.%s", env, Util.getDomain());
+    }
+
+    public static byte[] getResource(String name) throws IOException {
+        ClassLoader classLoader = Util.class.getClassLoader();
+        try (InputStream resourceAsStream = classLoader.getResourceAsStream(name)) {
+            return toByteArray(resourceAsStream);
+        }
+    }
+
+    public static int mentionLen(String txt) {
+        Matcher matcher = pattern.matcher(txt);
+        if (matcher.find()) {
+            return matcher.group().length() + 1;
+        }
+        return 0;
+    }
+
+    public static int mentionStart(String txt) {
+        Matcher matcher = pattern.matcher(txt);
+        if (matcher.find()) {
+            return matcher.start() - 1;
+        }
+        return 0;
+    }
+
+    public static UUID extractUserId(String token) throws AuthException {
+        String[] pairs = token.split("\\.");
+        for (String pair : pairs) {
+            String[] vals = pair.split("=");
+            if (vals.length == 2 && vals[0].equals("u"))
+                return UUID.fromString(vals[1]);
+        }
+        throw new AuthException("Error extracting userId from token", 403);
     }
 }

@@ -18,16 +18,23 @@
 
 package com.wire.bots.sdk.tools;
 
-import java.io.IOException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.*;
+import java.util.logging.Formatter;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 
 public class Logger {
-    private final static java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger(java.util.logging.Logger.GLOBAL_LOGGER_NAME);
+    public static java.util.logging.Logger getLOGGER() {
+        return LOGGER;
+    }
+
+    private final static java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger("com.wire.bots.logger");
     private static AtomicInteger errorCount = new AtomicInteger();
+    private static AtomicInteger warningCount = new AtomicInteger();
 
     static {
         java.util.logging.Logger.getLogger("org.apache.http.wire").setLevel(Level.SEVERE);
@@ -38,21 +45,17 @@ public class Logger {
         System.setProperty("org.apache.commons.logging.simplelog.log.org.apache.http", "ERROR");
         System.setProperty("org.apache.commons.logging.simplelog.log.org.apache.http.headers", "ERROR");
 
-        //java.util.logging.Logger.setLevel(Level.INFO);
-        ConsoleHandler stderr = new ConsoleHandler();
-        stderr.setFormatter(new BotFormatter());
-        LOGGER.addHandler(stderr);
-
-        try {
-            FileHandler fileHandler = new FileHandler("current.log", true);
-
-            fileHandler.setFormatter(new BotFormatter());
-            LOGGER.addHandler(fileHandler);
-        } catch (IOException e) {
-            e.printStackTrace();
+        for (Handler handler : LOGGER.getHandlers()) {
+            handler.setFormatter(new BotFormatter());
         }
+    }
 
-        LOGGER.setUseParentHandlers(false);
+    public static void debug(String msg) {
+        LOGGER.fine(msg);
+    }
+
+    public static void debug(String format, Object... args) {
+        LOGGER.fine(String.format(format, args));
     }
 
     public static void info(String msg) {
@@ -74,15 +77,25 @@ public class Logger {
     }
 
     public static void warning(String msg) {
+        warningCount.incrementAndGet();
         LOGGER.warning(msg);
     }
 
     public static void warning(String format, Object... args) {
+        warningCount.incrementAndGet();
         LOGGER.warning(String.format(format, args));
     }
 
     public static int getErrorCount() {
         return errorCount.get();
+    }
+
+    public static int getWarningCount() {
+        return warningCount.get();
+    }
+
+    public static Level getLevel() {
+        return LOGGER.getLevel();
     }
 
     static class BotFormatter extends Formatter {

@@ -19,74 +19,123 @@
 package com.wire.bots.sdk.user;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.wire.bots.sdk.exceptions.AuthException;
 import com.wire.bots.sdk.exceptions.HttpException;
 import com.wire.bots.sdk.models.otr.PreKey;
+import com.wire.bots.sdk.tools.Logger;
 import com.wire.bots.sdk.tools.Util;
+import com.wire.bots.sdk.user.model.Access;
 import com.wire.bots.sdk.user.model.NewClient;
-import com.wire.bots.sdk.user.model.User;
+import org.glassfish.jersey.logging.LoggingFeature;
 
+import javax.ws.rs.client.Client;
 import javax.ws.rs.client.Entity;
+import javax.ws.rs.client.Invocation;
 import javax.ws.rs.client.WebTarget;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
+import javax.ws.rs.core.*;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.List;
+import java.util.logging.Level;
 
 public class LoginClient {
-    final static WebTarget clientsPath;
-    final static WebTarget conversationsPath;
-    final static WebTarget usersPath;
-    final static WebTarget accessPath;
-    final static WebTarget assetsPath;
-    final static WebTarget teamsPath;
-    final static WebTarget connectionsPath;
-    private final static WebTarget loginPath;
+    private static final String LABEL = "wbots";
+    private static final String COOKIE_NAME = "zuid";
+    final WebTarget clientsPath;
+    private final WebTarget loginPath;
+    private final WebTarget accessPath;
+    private final WebTarget cookiesPath;
 
-    static {
-        WebTarget target = TrustedTlsClientBuilder.build().target(Util.getHost());
-        loginPath = target.path("login");
-        clientsPath = target.path("clients");
-        conversationsPath = target.path("conversations");
-        usersPath = target.path("users");
-        accessPath = target.path("access");
-        assetsPath = target.path("assets/v3");
-        teamsPath = target.path("teams");
-        connectionsPath = target.path("connections");
+    public LoginClient(Client client) {
+        String host = host();
+        loginPath = client
+                .target(host)
+                .path("login");
+        clientsPath = client
+                .target(host)
+                .path("clients");
+        accessPath = client
+                .target(host)
+                .path("access");
+
+        cookiesPath = client
+                .target(host)
+                .path("cookies");
+
+        Feature feature = new LoggingFeature(Logger.getLOGGER(), Level.FINE, null, null);
+        //accessPath.register(feature);
     }
 
-    static User login(String email, String password) throws HttpException {
-        User user = new User();
-        user.setEmail(email);
-        user.setPassword(password);
+    public static String host() {
+        return Util.getHost();
+    }
+
+    static String bearer(String token) {
+        return "Bearer " + token;
+    }
+
+    public Access login(String email, String password) throws HttpException {
+        return login(email, password, false);
+    }
+
+    public Access login(String email, String password, boolean persisted) throws HttpException {
+        _Login login = new _Login();
+        login.email = email;
+        login.password = password;
+        login.label = LABEL;
 
         Response response = loginPath.
-                queryParam("persist", false).
+                queryParam("persist", persisted).
                 request(MediaType.APPLICATION_JSON).
-                post(Entity.entity(user, MediaType.APPLICATION_JSON));
+                post(Entity.entity(login, MediaType.APPLICATION_JSON));
 
         if (response.getStatus() >= 400)
             throw new HttpException(response.readEntity(String.class), response.getStatus());
 
-        User ret = response.readEntity(User.class);
-        String cookie = response.getStringHeaders().getFirst("Set-Cookie");
-        ret.setCookie(cookie);
-        return ret;
+        Access access = response.readEntity(Access.class);
+
+        NewCookie zuid = response.getCookies().get(COOKIE_NAME);
+        if (zuid != null) {
+            access.setCookie(zuid);
+        }
+        return access;
     }
 
-    static String registerClient(PreKey key, String token, String password) throws HttpException {
+    @Deprecated
+    public String registerClient(String token, String password, ArrayList<PreKey> preKeys, PreKey lastKey) throws HttpException {
+        String deviceClass = "tablet";
+        String type = "permanent";
+        return registerClient(token, password, preKeys, lastKey, deviceClass, type, LABEL);
+    }
+
+    /**
+     * @param token
+     * @param password Wire password
+     * @param preKeys
+     * @param lastKey
+     * @param clazz    "tablet" | "phone" | "desktop"
+     * @param type     "permanent" | "temporary"
+     * @param label    can be anything
+     * @return Client id
+     * @throws HttpException
+     */
+    public String registerClient(String token, String password, ArrayList<PreKey> preKeys, PreKey lastKey,
+                                 String clazz, String type, String label) throws HttpException {
         NewClient newClient = new NewClient();
-        newClient.lastPreKey = key;
+        newClient.password = password;
+        newClient.lastPreKey = lastKey;
+        newClient.preKeys = preKeys;
         newClient.sigkeys.enckey = Base64.getEncoder().encodeToString(new byte[32]);
         newClient.sigkeys.mackey = Base64.getEncoder().encodeToString(new byte[32]);
+        newClient.clazz = clazz;
+        newClient.label = label;
+        newClient.type = type;
 
-        newClient.password = password;
-        newClient.deviceType = "tablet";
-        newClient.label = "wbotz";
-        newClient.type = "permanent";
-
-        Response response = clientsPath.
-                request(MediaType.APPLICATION_JSON).
-                header("Authorization", "Bearer " + token).
-                post(Entity.entity(newClient, MediaType.APPLICATION_JSON));
+        Response response = clientsPath
+                .request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                .post(Entity.entity(newClient, MediaType.APPLICATION_JSON));
 
         if (response.getStatus() >= 400)
             throw new HttpException(response.readEntity(String.class), response.getStatus());
@@ -94,8 +143,83 @@ public class LoginClient {
         return response.readEntity(_Client.class).id;
     }
 
+    public Access renewAccessToken(Cookie cookie) throws HttpException {
+        Invocation.Builder builder = accessPath
+                .request(MediaType.APPLICATION_JSON)
+                .cookie(cookie);
+
+        Response response = builder.
+                post(Entity.entity(null, MediaType.APPLICATION_JSON));
+
+        int status = response.getStatus();
+        if (status == 403) {
+            String entity = response.readEntity(String.class);
+            throw new AuthException(entity, status);
+        }
+
+        if (status >= 400) {
+            String entity = response.readEntity(String.class);
+            throw new HttpException(entity, status);
+        }
+
+        Access access = response.readEntity(Access.class);
+
+        NewCookie zuid = response.getCookies().get(COOKIE_NAME);
+        if (zuid != null) {
+            access.setCookie(zuid);
+        }
+        return access;
+    }
+
+    public void logout(String token, Cookie cookie) throws HttpException {
+        Response response = accessPath
+                .path("logout")
+                .request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                .cookie(cookie)
+                .post(Entity.entity(null, MediaType.APPLICATION_JSON));
+
+        int status = response.getStatus();
+        if (status == 403) {
+            String entity = response.readEntity(String.class);
+            throw new AuthException(entity, status);
+        }
+
+        if (status >= 400) {
+            String entity = response.readEntity(String.class);
+            throw new HttpException(entity, status);
+        }
+    }
+
+    public void removeCookies(String token, String password) throws HttpException {
+        _RemoveCookies removeCookies = new _RemoveCookies();
+        removeCookies.password = password;
+        removeCookies.labels = Collections.singletonList(LABEL);
+
+        Response response = cookiesPath.
+                request(MediaType.APPLICATION_JSON).
+                header(HttpHeaders.AUTHORIZATION, bearer(token)).
+                post(Entity.entity(removeCookies, MediaType.APPLICATION_JSON));
+
+        if (response.getStatus() >= 400)
+            throw new HttpException(response.readEntity(String.class), response.getStatus());
+    }
+
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class _Client {
+    static class _Login {
+        public String email;
+        public String password;
+        public String label;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class _Client {
         public String id;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class _RemoveCookies {
+        public String password;
+        public List<String> labels;
     }
 }

@@ -18,15 +18,35 @@
 
 package com.wire.bots.sdk.models;
 
-/**
- */
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.waz.model.Messages;
+
+import java.util.UUID;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class VideoMessage extends MessageAssetBase {
+    @JsonProperty
     private long duration;
+    @JsonProperty
     private int width;
+    @JsonProperty
     private int height;
 
-    public VideoMessage(String msgId, String convId, String clientId, String userId) {
-        super(msgId, convId, clientId, userId);
+    @JsonCreator
+    public VideoMessage(@JsonProperty("messageId") UUID messageId,
+                        @JsonProperty("conversationId") UUID convId,
+                        @JsonProperty("clientId") String clientId,
+                        @JsonProperty("userId") UUID userId) {
+        super(messageId, convId, clientId, userId);
+    }
+
+    public VideoMessage(MessageAssetBase base, Messages.Asset.VideoMetaData video) {
+        super(base);
+        setDuration(video.getDurationInMillis());
+        setHeight(video.getHeight());
+        setWidth(video.getWidth());
     }
 
     public void setDuration(long duration) {

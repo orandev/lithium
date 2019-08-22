@@ -21,7 +21,6 @@ package com.wire.bots.sdk.user.model;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.wire.bots.sdk.models.otr.PreKey;
 
-import java.util.ArrayList;
 import java.util.List;
 
 public class NewClient {
@@ -29,13 +28,13 @@ public class NewClient {
     public PreKey lastPreKey;
 
     @JsonProperty("prekeys")
-    public List<PreKey> preKeys = new ArrayList<>();
+    public List<PreKey> preKeys;
 
     @JsonProperty
     public String password;
 
     @JsonProperty("class")
-    public String deviceType;
+    public String clazz;
 
     @JsonProperty
     public String type;

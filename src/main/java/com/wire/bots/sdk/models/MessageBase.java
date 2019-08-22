@@ -18,26 +18,29 @@
 
 package com.wire.bots.sdk.models;
 
+import java.util.UUID;
+
 /**
  */
 abstract class MessageBase {
-    protected final String userId;
+    protected final UUID userId;
     protected final String clientId;
-    protected final String conversationId;
-    protected final String messageId;
+    protected final UUID conversationId;
+    protected final UUID messageId;
+    protected String time;
 
-    public MessageBase(String msgId, String convId, String clientId, String userId) {
+    MessageBase(UUID msgId, UUID convId, String clientId, UUID userId) {
         this.messageId = msgId;
         this.conversationId = convId;
         this.clientId = clientId;
         this.userId = userId;
     }
 
-    public String getConversationId() {
+    public UUID getConversationId() {
         return conversationId;
     }
 
-    public String getUserId() {
+    public UUID getUserId() {
         return userId;
     }
 
@@ -45,7 +48,15 @@ abstract class MessageBase {
         return clientId;
     }
 
-    public String getMessageId() {
+    public UUID getMessageId() {
         return messageId;
+    }
+
+    public String getTime() {
+        return time;
+    }
+
+    public void setTime(String time) {
+        this.time = time;
     }
 }
