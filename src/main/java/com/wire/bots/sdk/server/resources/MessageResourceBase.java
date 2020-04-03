@@ -11,8 +11,8 @@ import com.wire.bots.sdk.server.model.Conversation;
 import com.wire.bots.sdk.server.model.Member;
 import com.wire.bots.sdk.server.model.Payload;
 import com.wire.bots.sdk.server.model.SystemMessage;
-import com.wire.bots.sdk.tools.AuthValidator;
 import com.wire.bots.sdk.tools.Logger;
+import com.wire.bots.sdk.user.UserClient;
 
 import java.io.IOException;
 import java.util.Base64;
@@ -20,17 +20,15 @@ import java.util.List;
 import java.util.UUID;
 
 public abstract class MessageResourceBase {
-    private final AuthValidator validator;
     private final ClientRepo repo;
     private final MessageHandlerBase handler;
 
-    public MessageResourceBase(MessageHandlerBase handler, AuthValidator validator, ClientRepo repo) {
+    public MessageResourceBase(MessageHandlerBase handler, ClientRepo repo) {
         this.handler = handler;
-        this.validator = validator;
         this.repo = repo;
     }
 
-    protected void handleMessage(UUID id, Payload payload, WireClient client) throws Exception {
+    protected void handleMessage(UUID eventId, Payload payload, WireClient client) throws Exception {
         Payload.Data data = payload.data;
         UUID botId = client.getId();
 
@@ -55,7 +53,7 @@ public abstract class MessageResourceBase {
                     processor.cleanUp(messageId);
                 }
 
-                handler.onEvent(client, payload.from, message);
+                handler.onEvent(client, from, message);
             }
             break;
             case "conversation.member-join": {
@@ -64,7 +62,7 @@ public abstract class MessageResourceBase {
                 // Check if this bot got added to the conversation
                 List<UUID> participants = data.userIds;
                 if (participants.remove(botId)) {
-                    SystemMessage systemMessage = getSystemMessage(id, payload);
+                    SystemMessage systemMessage = getSystemMessage(eventId, payload);
                     systemMessage.conversation = client.getConversation();
                     systemMessage.type = "conversation.create"; //hack the type
 
@@ -75,7 +73,7 @@ public abstract class MessageResourceBase {
                 // Check if we still have some prekeys available. Upload new prekeys if needed
                 handler.validatePreKeys(client, participants.size());
 
-                SystemMessage systemMessage = getSystemMessage(id, payload);
+                SystemMessage systemMessage = getSystemMessage(eventId, payload);
                 systemMessage.users = data.userIds;
 
                 handler.onMemberJoin(client, systemMessage);
@@ -84,7 +82,7 @@ public abstract class MessageResourceBase {
             case "conversation.member-leave": {
                 Logger.debug("conversation.member-leave: bot: %s", botId);
 
-                SystemMessage systemMessage = getSystemMessage(id, payload);
+                SystemMessage systemMessage = getSystemMessage(eventId, payload);
                 systemMessage.users = data.userIds;
 
                 // Check if this bot got removed from the conversation
@@ -102,7 +100,7 @@ public abstract class MessageResourceBase {
             break;
             case "conversation.delete": {
                 Logger.debug("conversation.delete: bot: %s", botId);
-                SystemMessage systemMessage = getSystemMessage(id, payload);
+                SystemMessage systemMessage = getSystemMessage(eventId, payload);
 
                 // Cleanup
                 handler.onBotRemoved(botId, systemMessage);
@@ -112,7 +110,7 @@ public abstract class MessageResourceBase {
             case "conversation.create": {
                 Logger.debug("conversation.create: bot: %s", botId);
 
-                SystemMessage systemMessage = getSystemMessage(id, payload);
+                SystemMessage systemMessage = getSystemMessage(eventId, payload);
                 if (systemMessage.conversation.members != null) {
                     Member self = new Member();
                     self.id = botId;
@@ -125,7 +123,7 @@ public abstract class MessageResourceBase {
             case "conversation.rename": {
                 Logger.debug("conversation.rename: bot: %s", botId);
 
-                SystemMessage systemMessage = getSystemMessage(id, payload);
+                SystemMessage systemMessage = getSystemMessage(eventId, payload);
 
                 handler.onConversationRename(client, systemMessage);
             }
@@ -144,7 +142,7 @@ public abstract class MessageResourceBase {
                     Conversation conversation = new Conversation();
                     conversation.id = connection.convId;
                     SystemMessage systemMessage = new SystemMessage();
-                    systemMessage.id = id;
+                    systemMessage.id = eventId;
                     systemMessage.from = connection.from;
                     systemMessage.type = payload.type;
                     systemMessage.conversation = conversation;
@@ -182,15 +180,11 @@ public abstract class MessageResourceBase {
         return repo.getClient(botId);
     }
 
-    protected boolean isValid(String auth) {
-        return validator.validate(auth);
-    }
-
-    protected void handleUpdate(UUID id, Payload payload) {
+    protected void handleUpdate(UUID id, Payload payload, UserClient userClient) {
         switch (payload.type) {
             case "team.member-join": {
                 Logger.debug("%s: team: %s, user: %s", payload.type, payload.team, payload.data.user);
-                handler.onNewTeamMember(id, payload.team, payload.data.user);
+                handler.onNewTeamMember(userClient, payload.data.user);
             }
             break;
             case "user.update": {

@@ -25,7 +25,6 @@ import com.wire.bots.sdk.crypto.Crypto;
 import com.wire.bots.sdk.exceptions.HttpException;
 import com.wire.bots.sdk.models.AssetKey;
 import com.wire.bots.sdk.server.model.Conversation;
-import com.wire.bots.sdk.server.model.NewBot;
 import com.wire.bots.sdk.server.model.User;
 import com.wire.bots.sdk.tools.Util;
 
@@ -35,13 +34,17 @@ import java.security.MessageDigest;
 import java.util.*;
 
 public class UserClient extends WireClientBase implements WireClient {
+    private final UUID userId;
+    private final String clientId;
     private final API api;
-    private final UUID conv;
+    private final UUID convId;
 
-    UserClient(NewBot state, UUID conv, Crypto crypto, API api) {
-        super(api, crypto, state);
+    public UserClient(UUID userId, String clientId, UUID convId, Crypto crypto, API api) {
+        super(api, crypto, null);
+        this.userId = userId;
+        this.clientId = clientId;
         this.api = api;
-        this.conv = conv;
+        this.convId = convId;
     }
 
     public UUID sendText(String txt) throws Exception {
@@ -52,7 +55,9 @@ public class UserClient extends WireClientBase implements WireClient {
 
     @Override
     public UUID sendText(String txt, long expires) throws Exception {
-        MessageText generic = new MessageText(txt, expires);
+        MessageEphemeral generic = new MessageEphemeral(expires)
+                .setText(txt);
+
         postGenericMessage(generic);
         return generic.getMessageId();
     }
@@ -61,7 +66,9 @@ public class UserClient extends WireClientBase implements WireClient {
     public UUID sendText(String txt, UUID mention) throws Exception {
         int offset = Util.mentionStart(txt);
         int len = Util.mentionLen(txt);
-        MessageText generic = new MessageText(txt, 0, mention, offset, len);
+        MessageText generic = new MessageText(txt)
+                .addMention(mention, offset, len);
+
         postGenericMessage(generic);
         return generic.getMessageId();
     }
@@ -231,7 +238,17 @@ public class UserClient extends WireClientBase implements WireClient {
 
     @Override
     public UUID getConversationId() {
-        return conv;
+        return convId;
+    }
+
+    @Override
+    public UUID getId() {
+        return userId;
+    }
+
+    @Override
+    public String getDeviceId() {
+        return clientId;
     }
 
     @Override
@@ -241,8 +258,7 @@ public class UserClient extends WireClientBase implements WireClient {
 
     @Override
     public User getUser(UUID userId) throws HttpException {
-        Collection<User> users = api.getUsers(Collections.singleton(userId));
-        return users.iterator().next();
+        return api.getUser(userId);
     }
 
     @Override
@@ -273,5 +289,33 @@ public class UserClient extends WireClientBase implements WireClient {
     @Override
     public void call(String content) throws Exception {
         postGenericMessage(new Calling(content));
+    }
+
+    public UUID getTeam() throws HttpException {
+        return api.getTeam();
+    }
+
+    public Conversation createConversation(String name, UUID teamId, List<UUID> users) throws HttpException {
+        return api.createConversation(name, teamId, users);
+    }
+
+    public Conversation createOne2One(UUID teamId, UUID userId) throws HttpException {
+        return api.createOne2One(teamId, userId);
+    }
+
+    public void leaveConversation(UUID userId) throws HttpException {
+        api.leaveConversation(userId);
+    }
+
+    public User addParticipants(UUID... userIds) throws HttpException {
+        return api.addParticipants(userIds);
+    }
+
+    public User addService(UUID serviceId, UUID providerId) throws HttpException {
+        return api.addService(serviceId, providerId);
+    }
+
+    public boolean deleteConversation(UUID teamId) throws HttpException {
+        return api.deleteConversation(teamId);
     }
 }

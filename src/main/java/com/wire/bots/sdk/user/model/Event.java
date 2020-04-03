@@ -16,26 +16,20 @@
 // along with this program. If not, see http://www.gnu.org/licenses/.
 //
 
-package com.wire.bots.sdk.server.resources;
+package com.wire.bots.sdk.user.model;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.wire.bots.sdk.server.model.Payload;
 
-import javax.ws.rs.GET;
-import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
+import java.util.UUID;
 
-@Api
-@Path("/bots/status")
-@Produces(MediaType.TEXT_PLAIN)
-public class StatusResource {
-    @GET
-    @ApiOperation(value = "Status")
-    public Response status() {
-        return Response
-                .ok("**All good!**")
-                .build();
-    }
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class Event {
+    @JsonProperty
+    public UUID id;
+    @JsonProperty
+    public Payload[] payload;
+    @JsonProperty("transient")
+    public boolean trans;
 }

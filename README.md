@@ -24,10 +24,21 @@
     <dependency>
         <groupId>com.wire.bots</groupId>
         <artifactId>lithium</artifactId>
-        <version>2.31.0</version>
+        <version>2.35.0</version>
     </dependency>
 <dependencies>
 ```
+
+If you want to use [Version]() resource (API endpoint), you must create version file during the build.
+For example, during the Docker build, one can put following code inside `Dockerfile`:
+```dockerfile
+# create version file
+ARG release_version=development
+ENV RELEASE_FILE_PATH=/path/to/release.txt
+RUN echo $release_version > $RELEASE_FILE_PATH
+```
+And than add build argument ie. in the build pipeline 
+[like that](https://github.com/dkovacevic/roman/blob/8d41bcba20a8f7607210263944c9ccecd757ed44/.github/workflows/release.yml#L26).
 
 ### Tutorial:
 - [Echo Bot](https://github.com/wireapp/echo-bot)
@@ -79,6 +90,10 @@ Using the `manage.sh` script:
 ## Use Hello World sample service as your first service
 
 - [Hello World](https://github.com/wireapp/echo-bot)
+
+## Environment variables used:
+- `WIRE_API_HOST`: Wire Backend. `https://prod-nginz-https.wire.com` by default
+- `SERVICE_TOKEN`: Your service authentication token. All requests sent by the BE will have this token as Bearer Authorization HTTP header
 
 ## Other examples of Wire Services
 

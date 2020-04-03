@@ -18,9 +18,12 @@
 
 package com.wire.bots.sdk;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.dropwizard.client.JerseyClientConfiguration;
+import io.dropwizard.db.DataSourceFactory;
 import io.federecio.dropwizard.swagger.SwaggerBundleConfiguration;
+import org.hibernate.validator.constraints.NotEmpty;
 
 import javax.validation.Valid;
 import javax.validation.constraints.NotNull;
@@ -29,87 +32,83 @@ import javax.validation.constraints.NotNull;
  * Application configuration class. Extend this class to add your custom configuration
  */
 public class Configuration extends io.dropwizard.Configuration {
-
-    @JsonProperty("swagger")
-    public SwaggerBundleConfiguration swagger;
+    @JsonProperty("database")
+    @NotNull
+    public Database database;
 
     @Valid
-    @NotNull
-    public JerseyClientConfiguration jerseyClient = new JerseyClientConfiguration();
+    private _JerseyClientConfiguration jerseyClient = new _JerseyClientConfiguration();
+
+    @JsonProperty
+    @Deprecated
+    public DB db;
+
+    @JsonProperty("swagger")
+    public SwaggerBundleConfiguration swagger = new _SwaggerBundleConfiguration();
+
+    @JsonProperty
+    @Valid
+    public UserMode userMode;
+
+    @JsonProperty
+    public String apiHost = "https://prod-nginz-https.wire.com";
+
+    @JsonProperty
+    public String wsHost = "wss://prod-nginz-ssl.wire.com/await";
 
     @JsonProperty("jerseyClient")
-    public JerseyClientConfiguration getJerseyClientConfiguration() {
+    public JerseyClientConfiguration getJerseyClient() {
         return jerseyClient;
     }
 
     @JsonProperty("jerseyClient")
-    public void setJerseyClientConfiguration(JerseyClientConfiguration jerseyClient) {
+    public void setJerseyClient(_JerseyClientConfiguration jerseyClient) {
         this.jerseyClient = jerseyClient;
     }
 
-    /**
-     * Authentication token
-     */
-    @JsonProperty
-    @NotNull
-    public String auth;
-
-    /**
-     * The storage for the State and Cryptobox
-     */
-    @NotNull
-    @JsonProperty
-    public DB db;
-
-    /**
-     * Set to True if you want to run the bot as the User. Requires email/password System properties set
-     */
-    public boolean userMode = false;
-
-    public static String propOrEnv(String prop, boolean strict) {
-        final String env = prop.replace('.', '_').toUpperCase();
-        final String val = System.getProperty(prop, System.getenv(env));
-        if (val == null && strict) {
-            throw new ConfigValueNotFoundException(prop + " (" + env + ") not found");
-        }
-        return val;
-    }
-
-    public static String propOrEnv(String prop, String def) {
-        final String val = propOrEnv(prop, false);
-        if (val == null) {
-            return def;
-        } else {
-            return val;
-        }
-    }
-
-    public String getAuth() {
-        return auth;
-    }
-
-    public DB getDB() {
-        return db;
-    }
-
-    public SwaggerBundleConfiguration getSwagger() {
-        return swagger;
-    }
-
+    @Deprecated
     public static class DB {
         public String host;
         public Integer port;
-        public String database = "";
-        public String driver; // like: postgresql or fs
         public String user;
         public String password;
-        public String url; // a database url of the form: jdbc:`subprotocol`:`subname` or `file:///path/to/data/folder`
         public Integer timeout = 5000;
+        public String url;
+        public String driver;
     }
 
-    public final static class ConfigValueNotFoundException extends RuntimeException {
-        ConfigValueNotFoundException(String message) {
-            super(message);
+    public static class UserMode {
+        @NotNull
+        @NotEmpty
+        public String email;
+        @NotNull
+        @NotEmpty
+        public String password;
+        @JsonProperty
+        public boolean sync = true;
+    }
+
+    public static class Database extends DataSourceFactory {
+        @JsonProperty
+        public boolean baseline;
+    }
+
+    public static class _JerseyClientConfiguration extends JerseyClientConfiguration {
+        public _JerseyClientConfiguration() {
+            setChunkedEncodingEnabled(false);
+            setGzipEnabled(false);
+            setGzipEnabledForRequests(false);
         }
+    }
+
+    private static class _SwaggerBundleConfiguration extends SwaggerBundleConfiguration {
+        _SwaggerBundleConfiguration() {
+            setResourcePackage("com.wire.bots.sdk.server.resources");
+        }
+    }
+
+    @JsonIgnore
+    public boolean isUserMode() {
+        return userMode != null && userMode.email != null && userMode.password != null;
     }
 }

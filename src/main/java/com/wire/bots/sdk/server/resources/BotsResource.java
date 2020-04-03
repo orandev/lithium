@@ -18,6 +18,7 @@
 
 package com.wire.bots.sdk.server.resources;
 
+import com.codahale.metrics.annotation.Metered;
 import com.wire.bots.sdk.MessageHandlerBase;
 import com.wire.bots.sdk.crypto.Crypto;
 import com.wire.bots.sdk.factories.CryptoFactory;
@@ -25,13 +26,14 @@ import com.wire.bots.sdk.factories.StorageFactory;
 import com.wire.bots.sdk.server.model.ErrorMessage;
 import com.wire.bots.sdk.server.model.NewBot;
 import com.wire.bots.sdk.server.model.NewBotResponseModel;
-import com.wire.bots.sdk.tools.AuthValidator;
 import com.wire.bots.sdk.tools.Logger;
 import io.swagger.annotations.*;
 
 import javax.validation.Valid;
 import javax.validation.constraints.NotNull;
 import javax.ws.rs.*;
+import javax.ws.rs.container.ContainerRequestContext;
+import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import java.util.UUID;
@@ -45,13 +47,11 @@ public class BotsResource {
 
     protected final StorageFactory storageF;
     protected final CryptoFactory cryptoF;
-    protected final AuthValidator validator;
 
-    public BotsResource(MessageHandlerBase handler, StorageFactory storageF, CryptoFactory cryptoF, AuthValidator val) {
+    public BotsResource(MessageHandlerBase handler, StorageFactory storageF, CryptoFactory cryptoF) {
         this.handler = handler;
         this.storageF = storageF;
         this.cryptoF = cryptoF;
-        this.validator = val;
     }
 
     @POST
@@ -60,19 +60,15 @@ public class BotsResource {
             @ApiResponse(code = 403, message = "Invalid Authorization", response = ErrorMessage.class),
             @ApiResponse(code = 409, message = "Bot not accepted (whitelist?)", response = ErrorMessage.class),
             @ApiResponse(code = 201, message = "Alles gute")})
-    public Response newBot(
-            @ApiParam("Service's auth Bearer token") @HeaderParam("Authorization") @NotNull String auth,
-            @ApiParam @Valid @NotNull NewBot newBot) throws Exception {
+    @Authorization("Bearer")
+    @Metered
+    public Response newBot(@Context ContainerRequestContext context,
+                           @ApiParam("Service token as Bearer") @NotNull @HeaderParam("Authorization") String auth,
+                           @ApiParam @Valid @NotNull NewBot newBot) throws Exception {
 
-        if (!isValid(auth)) {
-            Logger.warning("Invalid auth '%s'", auth);
-            return Response
-                    .status(401)
-                    .entity(new ErrorMessage("Invalid Authorization: " + auth))
-                    .build();
-        }
+        String token = (String) context.getProperty("wire-auth");
 
-        if (!onNewBot(newBot, auth))
+        if (!onNewBot(newBot, token))
             return Response
                     .status(409)
                     .entity(new ErrorMessage("User not whitelisted or service does not accept new instances atm"))
@@ -109,10 +105,6 @@ public class BotsResource {
     }
 
     protected boolean onNewBot(NewBot newBot, String auth) {
-        return handler.onNewBot(newBot);
-    }
-
-    protected boolean isValid(String auth) {
-        return validator.validate(auth);
+        return handler.onNewBot(newBot, auth);
     }
 }

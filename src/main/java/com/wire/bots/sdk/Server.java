@@ -23,7 +23,7 @@ import com.codahale.metrics.jmx.JmxReporter;
 import com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider;
 import com.wire.bots.sdk.crypto.CryptoDatabase;
 import com.wire.bots.sdk.crypto.CryptoFile;
-import com.wire.bots.sdk.crypto.storage.PgStorage;
+import com.wire.bots.sdk.crypto.storage.JdbiStorage;
 import com.wire.bots.sdk.crypto.storage.RedisStorage;
 import com.wire.bots.sdk.factories.CryptoFactory;
 import com.wire.bots.sdk.factories.StorageFactory;
@@ -31,36 +31,35 @@ import com.wire.bots.sdk.healthchecks.Alice2Bob;
 import com.wire.bots.sdk.healthchecks.CryptoHealthCheck;
 import com.wire.bots.sdk.healthchecks.Outbound;
 import com.wire.bots.sdk.healthchecks.StorageHealthCheck;
+import com.wire.bots.sdk.server.filters.AuthenticationFeature;
 import com.wire.bots.sdk.server.resources.BotsResource;
 import com.wire.bots.sdk.server.resources.EmptyStatusResource;
 import com.wire.bots.sdk.server.resources.MessageResource;
-import com.wire.bots.sdk.server.resources.StatusResource;
+import com.wire.bots.sdk.server.resources.VersionResource;
 import com.wire.bots.sdk.server.tasks.AvailablePrekeysTask;
 import com.wire.bots.sdk.server.tasks.ConversationTask;
 import com.wire.bots.sdk.state.FileState;
-import com.wire.bots.sdk.state.PostgresState;
+import com.wire.bots.sdk.state.JdbiState;
 import com.wire.bots.sdk.state.RedisState;
-import com.wire.bots.sdk.tools.AuthValidator;
 import com.wire.bots.sdk.tools.Logger;
-import com.wire.bots.sdk.tools.Util;
-import com.wire.bots.sdk.user.Endpoint;
-import com.wire.bots.sdk.user.UserClientRepo;
-import com.wire.bots.sdk.user.UserMessageResource;
-import com.wire.bots.sdk.user.model.Access;
+import com.wire.bots.sdk.user.UserApplication;
 import io.dropwizard.Application;
+import io.dropwizard.bundles.redirect.PathRedirect;
+import io.dropwizard.bundles.redirect.RedirectBundle;
 import io.dropwizard.client.JerseyClientBuilder;
-import io.dropwizard.client.JerseyClientConfiguration;
 import io.dropwizard.configuration.EnvironmentVariableSubstitutor;
 import io.dropwizard.configuration.SubstitutingSourceProvider;
+import io.dropwizard.jdbi.DBIFactory;
 import io.dropwizard.servlets.tasks.Task;
 import io.dropwizard.setup.Bootstrap;
 import io.dropwizard.setup.Environment;
 import io.federecio.dropwizard.swagger.SwaggerBundle;
 import io.federecio.dropwizard.swagger.SwaggerBundleConfiguration;
+import org.flywaydb.core.Flyway;
 import org.glassfish.jersey.media.multipart.MultiPartFeature;
+import org.skife.jdbi.v2.DBI;
 
 import javax.ws.rs.client.Client;
-import java.net.URI;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -74,6 +73,7 @@ public abstract class Server<Config extends Configuration> extends Application<C
     protected Environment environment;
     protected Client client;
     protected MessageHandlerBase messageHandler;
+    protected DBI jdbi;
 
     /**
      * This method is called once by the sdk in order to create the main message handler
@@ -97,8 +97,8 @@ public abstract class Server<Config extends Configuration> extends Application<C
 
     /**
      * Override this method in case you need to add custom Resource and/or Task
-     * {@link #addResource(Object, io.dropwizard.setup.Environment)}
-     * and {@link #addTask(io.dropwizard.servlets.tasks.Task, io.dropwizard.setup.Environment)}
+     * {@link #addResource(Object)}
+     * and {@link #addTask(io.dropwizard.servlets.tasks.Task)}
      *
      * @param config Configuration object (yaml)
      * @param env    Environment object
@@ -109,18 +109,17 @@ public abstract class Server<Config extends Configuration> extends Application<C
 
     @Override
     public void initialize(Bootstrap<Config> bootstrap) {
-        bootstrap.setConfigurationSourceProvider(
-                new SubstitutingSourceProvider(bootstrap.getConfigurationSourceProvider(),
-                        new EnvironmentVariableSubstitutor(false)
-                )
-        );
-
+        bootstrap.setConfigurationSourceProvider(new SubstitutingSourceProvider(
+                bootstrap.getConfigurationSourceProvider(), new EnvironmentVariableSubstitutor(false)));
         bootstrap.addBundle(new SwaggerBundle<Config>() {
             @Override
             protected SwaggerBundleConfiguration getSwaggerBundleConfiguration(Config configuration) {
-                return configuration.getSwagger();
+                return configuration.swagger;
             }
         });
+        bootstrap.addBundle(new RedirectBundle(
+                new PathRedirect("/", "/status"),
+                new PathRedirect("/bots/status", "/status")));
     }
 
     @Override
@@ -128,163 +127,143 @@ public abstract class Server<Config extends Configuration> extends Application<C
         this.config = config;
         this.environment = env;
 
-        JerseyClientConfiguration jerseyCfg = config.getJerseyClientConfiguration();
-        jerseyCfg.setChunkedEncodingEnabled(false);
-        jerseyCfg.setGzipEnabled(false);
-        jerseyCfg.setGzipEnabledForRequests(false);
+        migrateDBifNeeded(config.database);
+
+        buildJdbi(config.database);
 
         client = new JerseyClientBuilder(environment)
-                .using(jerseyCfg)
+                .using(config.getJerseyClient())
                 .withProvider(MultiPartFeature.class)
                 .withProvider(JacksonJsonProvider.class)
                 .build(getName());
+
+        StorageFactory storageFactory = getStorageFactory();
+        CryptoFactory cryptoFactory = getCryptoFactory();
+
+        repo = new ClientRepo(client, cryptoFactory, storageFactory);
 
         initialize(config, env);
 
         messageHandler = createHandler(config, env);
 
-        if (config.userMode) {
-            runInUserMode(messageHandler);
+        if (config.isUserMode()) {
+            runInUserMode();
         }
 
-        repo = runInBotMode(env, messageHandler);
+        runInBotMode();
 
-        initTelemetry(env);
+        initTelemetry();
 
         onRun(config, env);
     }
 
+    protected void buildJdbi(Configuration.Database database) {
+        this.jdbi = new DBIFactory().build(environment, database, "lithium");
+    }
+
+    protected void migrateDBifNeeded(Configuration.Database database) {
+        Flyway flyway = Flyway
+                .configure()
+                .dataSource(database.getUrl(), database.getUser(), database.getPassword())
+                .baselineOnMigrate(database.baseline)
+                .load();
+        flyway.migrate();
+    }
+
     public StorageFactory getStorageFactory() {
-        if (config.db.driver == null) {
-            return botId -> new RedisState(botId, config.db);
+        if (config.db != null) {
+            if (config.db.driver.equals("redis"))
+                return (botId) -> new RedisState(botId, config.db);
+            if (config.db.driver.equals("fs"))
+                return botId -> new FileState(botId, config.db);
+
+            return botId -> new JdbiState(botId, jdbi);
         }
-        if (config.db.driver.equals("fs")) {
-            return botId -> new FileState(botId, config.db);
-        }
-        if (config.db.driver.equals("postgresql")) {
-            return botId -> new PostgresState(botId, config.db);
-        }
-        return botId -> new RedisState(botId, config.db);
+
+        return botId -> new JdbiState(botId, jdbi);
     }
 
     public CryptoFactory getCryptoFactory() {
-        if (config.db.driver == null) {
-            return redisCryptoFactory();
+        if (config.db != null) {
+            if (config.db.driver.equals("redis"))
+                return (botId) -> new CryptoDatabase(botId, new RedisStorage(config.db.host, config.db.port, config.db.password));
+            if (config.db.driver.equals("fs"))
+                return (botId) -> new CryptoFile(botId, config.db);
+
+            return (botId) -> new CryptoDatabase(botId, new JdbiStorage(jdbi));
         }
-        if (config.db.driver.equals("fs")) {
-            return fileCryptoFactory();
-        }
-        if (config.db.driver.equals("postgresql")) {
-            return postgresCryptoFactory();
-        }
-        return redisCryptoFactory();
+
+        return (botId) -> new CryptoDatabase(botId, new JdbiStorage(jdbi));
     }
 
-    private CryptoFactory fileCryptoFactory() {
-        return (botId) -> new CryptoFile(botId, config.db);
+    private void runInBotMode() {
+        // add status endpoint
+        addResource(new EmptyStatusResource());
+        // add version endpoint
+        addResource(new VersionResource());
+
+        botResource();
+        messageResource();
+
+        addTask(new ConversationTask(repo));
+        addTask(new AvailablePrekeysTask(repo));
     }
 
-    private CryptoFactory postgresCryptoFactory() {
-        return (botId) -> {
-            PgStorage storage = new PgStorage(config.db.user,
-                    config.db.password,
-                    config.db.database,
-                    config.db.host,
-                    config.db.port);
-            return new CryptoDatabase(botId, storage);
-        };
-    }
-
-    private CryptoFactory redisCryptoFactory() {
-        return (botId) -> {
-            RedisStorage storage = new RedisStorage(config.db.host,
-                    config.db.port,
-                    config.db.password);
-            return new CryptoDatabase(botId, storage);
-        };
-    }
-
-    private ClientRepo runInBotMode(Environment env, MessageHandlerBase handler) {
-        StorageFactory storageFactory = getStorageFactory();
-        CryptoFactory cryptoFactory = getCryptoFactory();
-
-        ClientRepo repo = new ClientRepo(client, cryptoFactory, storageFactory);
-
-        addResource(new StatusResource(), env);
-        addResource(new EmptyStatusResource(), env);
-
-        botResource(config, env, handler);
-        messageResource(config, env, handler, repo);
-
-        addTask(new ConversationTask(repo), env);
-        addTask(new AvailablePrekeysTask(repo), env);
-
-        return repo;
-    }
-
-    private void runInUserMode(MessageHandlerBase handler) throws Exception {
+    private void runInUserMode() {
         Logger.info("Starting in User Mode");
 
-        String email = Configuration.propOrEnv("email", true);
-        String password = Configuration.propOrEnv("password", true);
+        UserApplication app = new UserApplication(environment)
+                .addClient(client)
+                .addConfig(config)
+                .addCryptoFactory(getCryptoFactory())
+                .addStorageFactory(getStorageFactory())
+                .addHandler(messageHandler);
 
+        environment.lifecycle().manage(app);
+    }
+
+    protected void messageResource() {
+        addResource(new MessageResource(messageHandler, repo));
+    }
+
+    protected void botResource() {
         StorageFactory storageFactory = getStorageFactory();
         CryptoFactory cryptoFactory = getCryptoFactory();
 
-        UserClientRepo clientRepo = new UserClientRepo(client, cryptoFactory, storageFactory);
-
-        Endpoint ep = new Endpoint(client, cryptoFactory, storageFactory);
-        Access access = ep.signIn(email, password, true);
-        Logger.info("Logged in as: %s userId: %s:%s token: %s",
-                email,
-                access.getUserId(),
-                access.getClientId(),
-                access.getToken());
-
-        UserMessageResource userMessageResource = new UserMessageResource(access.getUserId(), handler, clientRepo);
-        String wss = Util.getWss(access.getToken(), access.getClientId());
-
-        ep.connectWebSocket(userMessageResource, new URI(wss));
+        addResource(new BotsResource(messageHandler, storageFactory, cryptoFactory));
     }
 
-    protected void messageResource(Config config, Environment env, MessageHandlerBase handler, ClientRepo repo) {
-        AuthValidator validator = new AuthValidator(config.getAuth());
-        addResource(new MessageResource(handler, validator, repo), env);
+    protected void addTask(Task task) {
+        environment.admin().addTask(task);
     }
 
-    protected void botResource(Config config, Environment env, MessageHandlerBase handler) {
-        StorageFactory storageFactory = getStorageFactory();
-        CryptoFactory cryptoFactory = getCryptoFactory();
-        AuthValidator authValidator = new AuthValidator(config.getAuth());
-
-        addResource(new BotsResource(handler, storageFactory, cryptoFactory, authValidator), env);
+    protected void addResource(Object component) {
+        environment.jersey().register(component);
     }
 
-    protected void addTask(Task task, Environment env) {
-        env.admin().addTask(task);
-    }
-
-    protected void addResource(Object component, Environment env) {
-        env.jersey().register(component);
-    }
-
-    private void initTelemetry(Environment env) {
+    private void initTelemetry() {
         final CryptoFactory cryptoFactory = getCryptoFactory();
         final StorageFactory storageFactory = getStorageFactory();
 
-        env.healthChecks().register("Storage", new StorageHealthCheck(storageFactory));
-        env.healthChecks().register("Crypto", new CryptoHealthCheck(cryptoFactory));
-        env.healthChecks().register("Alice2Bob", new Alice2Bob(cryptoFactory));
-        env.healthChecks().register("Outbound", new Outbound(client));
+        registerFeatures();
 
-        env.metrics().register("logger.errors", (Gauge<Integer>) Logger::getErrorCount);
-        env.metrics().register("logger.warnings", (Gauge<Integer>) Logger::getWarningCount);
+        environment.healthChecks().register("Storage", new StorageHealthCheck(storageFactory));
+        environment.healthChecks().register("Crypto", new CryptoHealthCheck(cryptoFactory));
+        environment.healthChecks().register("Alice2Bob", new Alice2Bob(cryptoFactory));
+        environment.healthChecks().register("Outbound", new Outbound(client));
 
-        JmxReporter jmxReporter = JmxReporter.forRegistry(env.metrics())
+        environment.metrics().register("logger.errors", (Gauge<Integer>) Logger::getErrorCount);
+        environment.metrics().register("logger.warnings", (Gauge<Integer>) Logger::getWarningCount);
+
+        JmxReporter jmxReporter = JmxReporter.forRegistry(environment.metrics())
                 .convertRatesTo(TimeUnit.SECONDS)
                 .convertDurationsTo(TimeUnit.MILLISECONDS)
                 .build();
         jmxReporter.start();
+    }
+
+    protected void registerFeatures() {
+        this.environment.jersey().register(AuthenticationFeature.class);
     }
 
     public ClientRepo getRepo() {
@@ -301,5 +280,9 @@ public abstract class Server<Config extends Configuration> extends Application<C
 
     public Client getClient() {
         return client;
+    }
+
+    public DBI getJdbi() {
+        return jdbi;
     }
 }

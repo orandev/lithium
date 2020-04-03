@@ -20,6 +20,7 @@ package com.wire.bots.sdk;
 
 import com.wire.bots.sdk.assets.*;
 import com.wire.bots.sdk.crypto.Crypto;
+import com.wire.bots.sdk.exceptions.HttpException;
 import com.wire.bots.sdk.models.AssetKey;
 import com.wire.bots.sdk.models.otr.PreKey;
 import com.wire.bots.sdk.server.model.Conversation;
@@ -53,7 +54,9 @@ public class BotClient extends WireClientBase implements WireClient {
 
     @Override
     public UUID sendText(String txt, long expires) throws Exception {
-        MessageText generic = new MessageText(txt, expires);
+        MessageEphemeral generic = new MessageEphemeral(expires)
+                .setText(txt);
+
         postGenericMessage(generic);
         return generic.getMessageId();
     }
@@ -62,7 +65,9 @@ public class BotClient extends WireClientBase implements WireClient {
     public UUID sendText(String txt, UUID mention) throws Exception {
         int offset = Util.mentionStart(txt);
         int len = Util.mentionLen(txt);
-        MessageText generic = new MessageText(txt, 0, mention, offset, len);
+        MessageText generic = new MessageText(txt)
+                .addMention(mention, offset, len);
+
         postGenericMessage(generic);
         return generic.getMessageId();
     }
@@ -113,12 +118,14 @@ public class BotClient extends WireClientBase implements WireClient {
     }
 
     @Override
+    @Deprecated //use send(IGeneric image)
     public UUID sendPicture(IGeneric image) throws Exception {
         postGenericMessage(image);
         return image.getMessageId();
     }
 
     @Override
+    @Deprecated //use send(IGeneric image, UUID userId)
     public UUID sendDirectPicture(IGeneric image, UUID userId) throws Exception {
         postGenericMessage(image, userId);
         return image.getMessageId();
@@ -196,6 +203,7 @@ public class BotClient extends WireClientBase implements WireClient {
     }
 
     @Override
+    @Deprecated
     public UUID sendDirectFile(IGeneric preview, IGeneric asset, UUID userId) throws Exception {
         // post original
         postGenericMessage(preview, userId);
@@ -281,7 +289,7 @@ public class BotClient extends WireClientBase implements WireClient {
     }
 
     @Override
-    public byte[] downloadProfilePicture(String assetKey) throws IOException {
+    public byte[] downloadProfilePicture(String assetKey) throws HttpException {
         return api.downloadAsset(assetKey, null);
     }
 
